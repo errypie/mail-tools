@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GigaCode Serve</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --side: #eef0f3; --text: #1d2129; --muted: #6b7280;
+  --border: #dde1e6; --accent: #1f9d55; --accent-text: #fff; --user: #e7f5ec; --code: #f2f4f7;
+  --danger: #c0392b; --warn: #b7791f; --info: #2b6cb0; --thought: #f3f1fa; --warn-bg: #fff8e6; --danger-bg: #fdecea;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .1); --font: Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171b; --panel: #1c1f24; --side: #111316; --text: #e6e8eb; --muted: #9aa1ab;
+    --border: #2c3036; --accent: #2fb36b; --accent-text: #0b1a12; --user: #1d3326; --code: #23272e;
+    --danger: #e5675a; --warn: #e0a84a; --info: #6aa5e8; --thought: #211f2b; --warn-bg: #2b2414; --danger-bg: #2d1a18;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .35);
+  }
+}
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 15px/1.4 var(--font); -webkit-font-smoothing: antialiased; display: flex; }
+button, select, input { font: inherit; }
+button { cursor: pointer; }
+.btn { border: 0; background: var(--user); color: var(--accent); border-radius: 10px; padding: 8px 14px; font-weight: 500; }
+.btn:hover:not(:disabled) { filter: brightness(.96); }
+.btn.primary { background: var(--accent); color: var(--accent-text); }
+.btn.danger { background: var(--danger-bg); color: var(--danger); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.small { padding: 5px 11px; font-size: 14px; }
+a.btn { text-decoration: none; }
+
+aside { width: 300px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+aside .top { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.filter { display: flex; flex-direction: row-reverse; justify-content: space-between; gap: 6px; font-size: 14px; color: var(--text); align-items: center; cursor: pointer; }
+.filter input { appearance: none; -webkit-appearance: none; position: relative; width: 38px; height: 22px; margin: 0; border-radius: 11px; background: var(--border); cursor: pointer; flex-shrink: 0; transition: background .15s; }
+.filter input::before { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left .15s; }
+.filter input:checked { background: var(--accent); }
+.filter input:checked::before { left: 18px; }
+#sessions { flex: 1; overflow-y: auto; padding: 0 6px 6px; }
+.s-item { padding: 8px 10px; border-radius: 10px; cursor: pointer; display: grid; grid-template-columns: 48px 1fr; gap: 0 10px; align-items: center; }
+.s-item:hover { background: var(--bg); }
+.s-item.active, .s-item.active:hover { background: var(--accent); }
+.s-item.active .name, .s-item.active .sub { color: var(--accent-text); }
+.s-item.active .tag { color: var(--accent-text); background: rgba(0, 0, 0, .14); }
+.s-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.s-item .sub { grid-column: 2; font-size: 14px; color: var(--muted); display: flex; gap: 6px; overflow: hidden; white-space: nowrap; }
+.ava { grid-row: 1 / 3; position: relative; width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--panel); font-size: 17px; font-weight: 500; }
+.ava.c0 { background: var(--accent); } .ava.c1 { background: var(--info); } .ava.c2 { background: var(--warn); } .ava.c3 { background: var(--danger); }
+.ava .dot { position: absolute; right: 0; bottom: 0; width: 13px; height: 13px; box-shadow: 0 0 0 2px var(--panel); }
+.s-item.active .ava { box-shadow: 0 0 0 2px var(--accent-text); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.dot.idle { background: var(--accent); }
+.dot.running, .dot.starting { background: var(--info); animation: pulse 1s infinite; }
+.dot.waiting { background: var(--warn); animation: pulse .7s infinite; }
+.dot.died { background: var(--danger); }
+.dot.closed { background: var(--panel); border: 2px solid var(--muted); }
+@keyframes pulse { 50% { opacity: .35; } }
+.tag { font-size: 12px; padding: 0 8px; border-radius: 10px; background: var(--code); color: var(--muted); }
+aside .bottom { border-top: 1px solid var(--border); padding: 10px 12px; font-size: 13px; color: var(--muted); }
+aside .bottom label { display: block; margin: 8px 0 4px; }
+aside .bottom input, aside .bottom select { width: 100%; padding: 8px 12px; border: 1px solid transparent; border-radius: 10px; background: var(--bg); color: var(--text); font-size: 14px; outline: 0; }
+aside .bottom input:focus, aside .bottom select:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+header { padding: 9px 16px; display: flex; align-items: center; gap: 10px; background: var(--panel); box-shadow: var(--shadow); position: relative; flex-wrap: wrap; }
+header h1 { font-size: 17px; font-weight: 500; margin: 0; flex: 1; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+header .state { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+header select { padding: 5px 8px; border-radius: 10px; border: 0; background: var(--bg); color: var(--text); font-size: 14px; }
+#menu { display: none; }
+.content { flex: 1; display: flex; min-height: 0; }
+#log { flex: 1; min-width: 0; overflow-y: auto; padding: 20px 16px; }
+.wrap { max-width: 900px; margin: 0 auto; }
+#diag { width: 0; overflow: hidden; border-left: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; transition: width .15s; }
+#diag.open { width: min(420px, 50vw); flex-shrink: 0; }
+#diag .tabs { display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid var(--border); }
+#diag .tabs button { border: 0; background: none; color: var(--muted); padding: 5px 10px; border-radius: 10px; font-weight: 500; }
+#diag .tabs button.on { background: var(--user); color: var(--accent); }
+#diag pre { flex: 1; margin: 0; padding: 10px; overflow: auto; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+
+.msg { margin: 0 0 12px; display: flex; flex-direction: column; align-items: flex-start; }
+.msg.user { align-items: flex-end; }
+.msg .body { max-width: 85%; min-width: 0; padding: 8px 13px; box-shadow: var(--shadow); }
+.msg.user .body { background: var(--user); border-radius: 14px 14px 4px 14px; white-space: pre-wrap; word-wrap: break-word; }
+.who { font-size: 12px; color: var(--muted); margin-bottom: 3px; display: flex; gap: 6px; align-items: center; }
+.agent .body { background: var(--panel); border-radius: 14px 14px 14px 4px; overflow-wrap: anywhere; }
+details.thought { background: var(--thought); border-radius: 14px; padding: 6px 12px; margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+details.thought summary { cursor: pointer; font-size: 13px; }
+details.thought .t { white-space: pre-wrap; margin-top: 6px; font-style: italic; }
+.card { background: var(--panel); border-radius: 14px; margin: 0 0 12px; font-size: 14px; box-shadow: var(--shadow); overflow: hidden; }
+.card .head { display: flex; gap: 8px; align-items: center; padding: 7px 12px; }
+.card .head .title { flex: 1; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card details { border-top: 1px solid var(--border); padding: 6px 12px; }
+.card details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.card pre { margin: 6px 0 2px; max-height: 320px; overflow: auto; background: var(--code); border-radius: 6px; padding: 8px; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; }
+.chip { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--code); color: var(--muted); white-space: nowrap; }
+.chip.pending, .chip.in_progress { color: var(--info); }
+.chip.completed { color: var(--accent); }
+.chip.failed { color: var(--danger); }
+.card.permission { background: var(--warn-bg); }
+.card.permission .opts { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 12px 10px; }
+.card.permission .done { padding: 0 12px 8px; color: var(--muted); font-size: 13px; }
+.plan { list-style: none; padding: 4px 12px 8px; margin: 0; }
+.plan li::before { content: "○ "; color: var(--muted); }
+.plan li.in_progress::before { content: "◐ "; color: var(--info); }
+.plan li.completed { color: var(--muted); text-decoration: line-through; }
+.plan li.completed::before { content: "● "; color: var(--accent); }
+.diff .del { color: var(--danger); } .diff .add { color: var(--accent); }
+.meta { font-size: 12px; color: var(--muted); margin: -4px 0 16px; display: flex; gap: 10px; }
+.banner { border-radius: 14px; padding: 10px 14px; margin: 0 0 12px; font-size: 14px; }
+.banner.error { background: var(--danger-bg); color: var(--danger); }
+.banner.info { background: var(--code); color: var(--muted); }
+.banner pre { white-space: pre-wrap; margin: 6px 0 0; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; color: var(--text); max-height: 240px; overflow: auto; }
+.thinking { color: var(--muted); font-style: italic; font-size: 14px; margin: 0 0 12px; }
+.empty { text-align: center; color: var(--muted); margin-top: 16vh; }
+.empty h2 { color: var(--text); font-weight: 500; }
+
+.body p { margin: 0 0 10px; } .body p:last-child { margin-bottom: 0; }
+.body h1, .body h2, .body h3, .body h4 { margin: 14px 0 8px; line-height: 1.3; }
+.body h1 { font-size: 1.3em; } .body h2 { font-size: 1.17em; } .body h3, .body h4 { font-size: 1.05em; }
+.body ul, .body ol { margin: 0 0 10px; padding-left: 24px; }
+.body code { background: var(--code); border-radius: 4px; padding: 1px 5px; font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+.body pre { position: relative; background: var(--code); border-radius: 10px; padding: 12px; overflow-x: auto; margin: 0 0 12px; }
+.body pre code { background: none; padding: 0; display: block; white-space: pre; }
+.body pre .lang { position: absolute; top: 4px; left: 10px; font-size: 11px; color: var(--muted); }
+.body pre .copy { position: absolute; top: 6px; right: 6px; font-size: 12px; padding: 2px 8px; border: 0; border-radius: 10px; background: var(--panel); color: var(--accent); }
+.body pre:has(.lang) { padding-top: 24px; }
+.body blockquote { margin: 0 0 10px; padding-left: 12px; border-left: 3px solid var(--border); color: var(--muted); }
+.body table { border-collapse: collapse; margin: 0 0 12px; display: block; overflow-x: auto; }
+.body th, .body td { border: 1px solid var(--border); padding: 4px 10px; }
+.body a { color: var(--accent); }
+
+footer { padding: 10px 16px 14px; }
+.composer { max-width: 900px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; background: var(--panel); border-radius: 24px; padding: 5px 5px 5px 12px; box-shadow: var(--shadow); }
+#send { width: 40px; height: 40px; padding: 0; border-radius: 50%; flex-shrink: 0; font-size: 17px; }
+textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; color: var(--text); font: inherit; max-height: 240px; padding: 6px 8px; }
+.hint { max-width: 900px; margin: 6px auto 0; font-size: 12px; color: var(--muted); text-align: center; }
+@media (max-width: 760px) {
+  aside { position: fixed; inset: 0 auto 0 0; z-index: 10; transform: translateX(-100%); transition: transform .2s; }
+  aside.open { transform: none; }
+  #menu { display: inline-block; }
+  #diag.open { position: fixed; inset: 0 0 0 auto; width: 100%; z-index: 9; }
+}
+</style>
+</head>
+<body>
+<aside id="side">
+  <div class="top">
+    <button class="btn primary" id="newSession">+ Новая сессия</button>
+    <label class="filter"><input type="checkbox" id="showClosed"> показывать завершённые</label>
+  </div>
+  <div id="sessions"></div>
+  <div class="bottom">
+    <label for="cwd">Каталог для новой сессии</label>
+    <input id="cwd" placeholder="по умолчанию сервера">
+    <label for="policy">Запросы разрешений</label>
+    <select id="policy">
+      <option value="ask">спрашивать меня</option>
+      <option value="allow">разрешать всё</option>
+      <option value="reject">отклонять всё</option>
+    </select>
+    <label for="token">Токен API (если сервер с --token)</label>
+    <input id="token" type="password">
+  </div>
+</aside>
+<main>
+  <header>
+    <button class="btn small" id="menu">☰</button>
+    <h1 id="title">GigaCode</h1>
+    <span class="state" id="state"></span>
+    <select id="mode" title="Режим подтверждений" hidden></select>
+    <button class="btn small danger" id="cancel" hidden>Стоп</button>
+    <button class="btn small" id="diagBtn">Диагностика</button>
+    <a class="btn small" id="export" hidden download>Экспорт</a>
+    <button class="btn small" id="closeSession" hidden>Закрыть</button>
+  </header>
+  <div class="content">
+    <div id="log"><div class="wrap" id="timeline"></div></div>
+    <div id="diag">
+      <div class="tabs">
+        <button data-tab="stderr" class="on">stderr агента</button>
+        <button data-tab="events">все события</button>
+        <span style="flex:1"></span>
+        <button id="diagClose">✕</button>
+      </div>
+      <pre id="diagText"></pre>
+    </div>
+  </div>
+  <footer>
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="Сообщение агенту…"></textarea>
+      <button class="btn primary" id="send" title="Отправить" aria-label="Отправить">➤</button>
+    </div>
+    <div class="hint">Enter — отправить, Shift+Enter — новая строка. Запросы из API (/api/chat, /v1, /session) появляются в списке слева вживую.</div>
+  </footer>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+};
+for (const [id, key, def] of [["cwd", "gs.cwd", ""], ["token", "gs.token", ""], ["policy", "gs.policy", "ask"]]) {
+  $(id).value = store.get(key, def);
+  $(id).addEventListener("input", () => store.set(key, $(id).value.trim()));
+}
+$("showClosed").checked = store.get("gs.showClosed", true);
+$("showClosed").onchange = () => { store.set("gs.showClosed", $("showClosed").checked); renderList(); };
+
+function headers(extra) {
+  const h = Object.assign({ "Content-Type": "application/json", "X-Qwen-Client-Id": "web-ui" }, extra || {});
+  const t = $("token").value.trim();
+  if (t) h.Authorization = "Bearer " + t;
+  return h;
+}
+async function api(method, path, body) {
+  const res = await fetch(path, { method, headers: headers(), body: body === undefined ? undefined : JSON.stringify(body) });
+  if (res.status === 204) return null;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || (res.status + " " + res.statusText));
+  return data;
+}
+
+// ---------- мини-markdown ----------
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function inline(s) {
+  const codes = [];
+  s = s.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return "\u0000" + (codes.length - 1) + "\u0000"; });
+  s = esc(s)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1<em>$2</em>")
+    .replace(/~~([^~]+)~~/g, "<del>$1</del>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => "<code>" + esc(codes[+i]) + "</code>");
+}
+function markdown(src) {
+  const lines = src.replace(/\r\n/g, "\n").split("\n");
+  let out = [], i = 0;
+  while (i < lines.length) {
+    let line = lines[i];
+    const fence = line.match(/^\s*(```|~~~)\s*([\w+#.-]*)/);
+    if (fence) {
+      const buf = []; i++;
+      while (i < lines.length && !lines[i].trim().startsWith(fence[1])) buf.push(lines[i++]);
+      i++;
+      out.push('<pre>' + (fence[2] ? '<span class="lang">' + esc(fence[2]) + '</span>' : '') +
+        '<button class="copy">копировать</button><code>' + esc(buf.join("\n")) + '</code></pre>');
+      continue;
+    }
+    const h = line.match(/^(#{1,6})\s+(.*)/);
+    if (h) { const n = Math.min(h[1].length, 4); out.push(`<h${n}>${inline(h[2])}</h${n}>`); i++; continue; }
+    if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(line)) { out.push("<hr>"); i++; continue; }
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1]) && lines[i + 1].includes("-")) {
+      const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(c.trim()));
+      let t = "<table><tr>" + cells(line).map((c) => "<th>" + c + "</th>").join("") + "</tr>";
+      i += 2;
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) t += "<tr>" + cells(lines[i++]).map((c) => "<td>" + c + "</td>").join("") + "</tr>";
+      out.push(t + "</table>"); continue;
+    }
+    if (/^\s*>/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) buf.push(lines[i++].replace(/^\s*>\s?/, ""));
+      out.push("<blockquote>" + markdown(buf.join("\n")) + "</blockquote>"); continue;
+    }
+    const li = line.match(/^\s*([-*+]|\d+[.)])\s+/);
+    if (li) {
+      const tag = /\d/.test(li[1]) ? "ol" : "ul", items = [];
+      while (i < lines.length) {
+        const m = lines[i].match(/^\s*([-*+]|\d+[.)])\s+(.*)/);
+        if (m) { items.push(m[2]); i++; }
+        else if (lines[i].trim() && /^\s{2,}/.test(lines[i]) && items.length) { items[items.length - 1] += " " + lines[i].trim(); i++; }
+        else break;
+      }
+      out.push(`<${tag}>` + items.map((t) => "<li>" + inline(t) + "</li>").join("") + `</${tag}>`); continue;
+    }
+    if (!line.trim()) { i++; continue; }
+    const buf = [];
+    while (i < lines.length && lines[i].trim() && !/^\s*(```|~~~|#{1,6}\s|>|([-*+]|\d+[.)])\s)/.test(lines[i])) buf.push(lines[i++]);
+    if (!buf.length) buf.push(lines[i++]);
+    out.push("<p>" + buf.map(inline).join("<br>") + "</p>");
+  }
+  return out.join("");
+}
+function copy(text, btn) {
+  const done = () => { const t = btn.textContent; btn.textContent = "скопировано"; setTimeout(() => (btn.textContent = t), 1200); };
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done);
+  else { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); done(); }
+}
+$("timeline").addEventListener("click", (e) => {
+  if (e.target.classList.contains("copy")) copy(e.target.parentElement.querySelector("code").textContent, e.target);
+});
+
+// ---------- список сессий ----------
+let sessions = [];
+let currentId = store.get("gs.current", null);
+function dotClass(s) {
+  if (s.state === "running" && s.isWaitingForPermission) return "waiting";
+  return s.state;
+}
+function stateText(s) {
+  if (s.isWaitingForPermission) return "ждёт разрешения";
+  return { starting: "запуск", idle: "готова", running: "работает", closed: "закрыта", died: "упала" }[s.state] || s.state;
+}
+function ago(ms) {
+  const d = (Date.now() - ms) / 1000;
+  if (d < 60) return Math.round(d) + " с назад";
+  if (d < 3600) return Math.round(d / 60) + " мин назад";
+  return new Date(ms).toLocaleTimeString();
+}
+function renderList() {
+  const box = $("sessions"); box.innerHTML = "";
+  const show = $("showClosed").checked;
+  sessions.filter((s) => show || ["starting", "idle", "running"].includes(s.state) || s.state === "died" || s.sessionId === currentId)
+    .forEach((s) => {
+      const el = document.createElement("div");
+      el.className = "s-item" + (s.sessionId === currentId ? " active" : "");
+      el.innerHTML = `<span class="ava"><span></span><span class="dot ${dotClass(s)}"></span></span><span class="name"></span>
+        <span class="sub"><span></span>${s.kind !== "interactive" ? '<span class="tag">' + esc(s.displayName && s.displayName.startsWith("[openai]") ? "openai" : "api") + "</span>" : ""}</span>`;
+      const name = (s.displayName || "Без названия").replace(/^\[(api|openai|web)\]\s*/, "");
+      const hash = [...s.sessionId].reduce((a, c) => (a * 31 + c.codePointAt(0)) >>> 0, 0);
+      el.querySelector(".name").textContent = name;
+      el.querySelector(".ava").classList.add("c" + (hash >>> 5) % 4);
+      el.querySelector(".ava span").textContent = ([...name.trim()][0] || "?").toUpperCase();
+      el.querySelector(".sub span").textContent = stateText(s) + " · " + ago(s.updatedAt);
+      el.title = s.workspaceCwd;
+      el.onclick = () => { open(s.sessionId); $("side").classList.remove("open"); };
+      box.appendChild(el);
+    });
+  if (!box.children.length) box.innerHTML = '<div style="padding:10px;color:var(--muted);font-size:13px">Сессий пока нет</div>';
+}
+async function refreshList() {
+  try {
+    sessions = (await api("GET", "/session")).sessions;
+    renderList();
+    const cur = sessions.find((s) => s.sessionId === currentId);
+    if (cur) renderHeader(cur);
+  } catch (e) { /* сервер недоступен — попробуем позже */ }
+}
+setInterval(refreshList, 2500);
+
+// ---------- просмотр сессии ----------
+let stream = null;        // {controller}
+let view = null;          // состояние отрисовки текущей сессии
+let status = null;
+
+function resetView() {
+  $("timeline").innerHTML = "";
+  view = { lastId: 0, block: null, blockKind: null, blockText: "", tools: {}, perms: {}, plan: null,
+           stderr: [], events: [], pending: false };
+  updateDiag();
+}
+function renderHeader(s) {
+  status = s;
+  $("title").textContent = (s.displayName || "Сессия " + s.sessionId.slice(0, 8)).replace(/^\[(api|openai|web)\]\s*/, "");
+  $("state").innerHTML = `<span class="dot ${dotClass(s)}"></span><span></span>`;
+  let t = stateText(s);
+  if (s.queuedPrompts > 1) t += " · в очереди " + (s.queuedPrompts - 1);
+  if (s.usage && s.usage.size) t += " · контекст " + Math.round(100 * s.usage.used / s.usage.size) + "%";
+  $("state").lastChild.textContent = t;
+  $("state").title = s.workspaceCwd + (s.error ? "\n" + s.error : "");
+  const live = ["idle", "running"].includes(s.state);
+  $("cancel").hidden = !s.hasActivePrompt;
+  $("closeSession").hidden = !live;
+  $("export").hidden = false;
+  $("export").href = "/session/" + s.sessionId + "/export?format=md";
+  const modes = s.modes && s.modes.availableModes;
+  $("mode").hidden = !(live && modes && modes.length);
+  if (modes && document.activeElement !== $("mode")) {
+    $("mode").innerHTML = modes.map((m) => `<option value="${esc(m.id)}">${esc(m.name || m.id)}</option>`).join("");
+    $("mode").value = s.modes.currentModeId;
+  }
+  $("input").placeholder = live ? "Сообщение агенту…" : "Сессия завершена — сообщение откроет новую";
+}
+function emptyState() {
+  $("timeline").innerHTML = '<div class="empty"><h2>Чем помочь?</h2><p>Напишите сообщение — будет создана живая сессия <code>gigacode --acp</code>.<br>Видно мысли агента, вызовы инструментов и запросы разрешений.</p></div>';
+  $("title").textContent = "GigaCode";
+  $("state").innerHTML = "";
+  for (const id of ["cancel", "closeSession", "export", "mode"]) $(id).hidden = true;
+}
+
+function open(sid) {
+  if (stream) stream.controller.abort();
+  currentId = sid; store.set("gs.current", sid);
+  resetView(); renderList();
+  if (!sid) { emptyState(); return; }
+  const s = sessions.find((x) => x.sessionId === sid);
+  if (s) renderHeader(s);
+  connect(sid);
+}
+
+async function connect(sid) {
+  const controller = new AbortController();
+  stream = { controller };
+  try {
+    const res = await fetch("/session/" + sid + "/events", {
+      headers: headers({ "Last-Event-ID": String(view.lastId) }), signal: controller.signal });
+    if (res.status === 404) { currentId = null; store.set("gs.current", null); emptyState(); renderList(); return; }
+    if (!res.ok) throw new Error(res.status + " " + res.statusText);
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+        const data = frame.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart()).join("\n");
+        if (!data) continue;
+        const ev = JSON.parse(data);
+        if (ev.id) { if (ev.id <= view.lastId) continue; view.lastId = ev.id; }
+        handle(ev);
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") return;
+  }
+  // поток закрыт: если сессия ещё жива — переподключаемся и дочитываем с lastId
+  if (stream && stream.controller === controller && currentId === sid) {
+    const s = sessions.find((x) => x.sessionId === sid);
+    if (!s || ["starting", "idle", "running"].includes(s.state)) setTimeout(() => currentId === sid && connect(sid), 2000);
+  }
+}
+
+// ---------- отрисовка событий ----------
+const TL = () => $("timeline");
+function nearBottom() { const l = $("log"); return l.scrollHeight - l.scrollTop - l.clientHeight < 120; }
+function scrollDown() { const l = $("log"); l.scrollTop = l.scrollHeight; }
+function add(el) { const stick = nearBottom(); removeThinking(); TL().appendChild(el); if (stick) scrollDown(); return el; }
+function div(cls, html) { const d = document.createElement("div"); d.className = cls; if (html != null) d.innerHTML = html; return d; }
+function endBlock() { flushBlock(); view.block = null; view.blockKind = null; view.blockText = ""; }  // хвост ответа не должен ждать кадра
+function removeThinking() { const t = TL().querySelector(".thinking"); if (t) t.remove(); }
+function showThinking() { if (!TL().querySelector(".thinking")) TL().appendChild(div("thinking", "агент работает…")); }
+let rafPending = false;
+function flushBlock() {
+  rafPending = false;
+  if (!view.block) return;
+  const stick = nearBottom();
+  if (view.blockKind === "agent_message_chunk") view.block.querySelector(".body").innerHTML = markdown(view.blockText);
+  else view.block.querySelector(".t").textContent = view.blockText;
+  if (stick) scrollDown();
+}
+function appendChunk(kind, text) {
+  if (view.blockKind !== kind || !view.block) {
+    endBlock();
+    view.blockKind = kind;
+    if (kind === "agent_thought_chunk") {
+      view.block = add(document.createElement("details"));
+      view.block.className = "thought"; view.block.open = true;
+      view.block.innerHTML = "<summary>Размышления</summary><div class='t'></div>";
+    } else {
+      view.block = add(div("msg agent", "<div class='who'>GigaCode</div><div class='body'></div>"));
+    }
+  }
+  view.blockText += text;
+  if (!rafPending) { rafPending = true; requestAnimationFrame(flushBlock); }
+}
+const KIND_ICON = { read: "📖", edit: "✏️", delete: "🗑", move: "📦", search: "🔍", execute: "▶️", think: "💭", fetch: "🌐", switch_mode: "🔀", other: "🔧" };
+function contentText(content) {
+  if (!Array.isArray(content)) return "";
+  return content.map((c) => {
+    if (c.type === "content" && c.content) return c.content.type === "text" ? c.content.text : "[" + c.content.type + "]";
+    if (c.type === "diff") return "@@ " + c.path + "\n" + (c.oldText || "").split("\n").map((l) => "- " + l).join("\n") + "\n" + (c.newText || "").split("\n").map((l) => "+ " + l).join("\n");
+    if (c.type === "terminal") return "[terminal " + c.terminalId + "]";
+    return JSON.stringify(c);
+  }).join("\n");
+}
+function renderDiffPre(text) {
+  return text.split("\n").map((l) => l.startsWith("- ") ? `<span class="del">${esc(l)}</span>` : l.startsWith("+ ") ? `<span class="add">${esc(l)}</span>` : esc(l)).join("\n");
+}
+function toolCard(u) {
+  let t = view.tools[u.toolCallId];
+  if (!t) {
+    endBlock();
+    const el = add(div("card tool"));
+    t = view.tools[u.toolCallId] = { el, data: {} };
+  }
+  Object.assign(t.data, Object.fromEntries(Object.entries(u).filter(([, v]) => v !== undefined && v !== null)));
+  const d = t.data, status = d.status || "pending";
+  const meta = d._meta || {};
+  let html = `<div class="head"><span>${KIND_ICON[d.kind] || "🔧"}</span><span class="title"></span>
+    <span class="chip ${esc(status)}">${esc(status)}</span></div>`;
+  const input = d.rawInput != null ? JSON.stringify(d.rawInput, null, 2) : "";
+  const out = contentText(d.content) || (d.rawOutput != null ? (typeof d.rawOutput === "string" ? d.rawOutput : JSON.stringify(d.rawOutput, null, 2)) : "");
+  if (input) html += `<details><summary>аргументы</summary><pre>${esc(input)}</pre></details>`;
+  if (out) html += `<details ${status === "failed" ? "open" : ""}><summary>результат</summary><pre class="diff">${renderDiffPre(out)}</pre></details>`;
+  const wasOpen = [...t.el.querySelectorAll("details")].map((x) => x.open);
+  t.el.innerHTML = html;
+  t.el.querySelectorAll("details").forEach((x, i) => { if (wasOpen[i]) x.open = true; });
+  t.el.querySelector(".title").textContent = d.title || meta.toolName || u.toolCallId;
+  t.el.querySelector(".title").title = (d.locations || []).map((l) => l.path).join("\n");
+}
+function planCard(u) {
+  endBlock();
+  if (!view.plan) view.plan = add(div("card"));
+  const entries = u.entries || [];
+  view.plan.innerHTML = '<div class="head"><span>📋</span><span class="title">План</span></div><ul class="plan">' +
+    entries.map((e) => `<li class="${esc(e.status)}">${esc(e.content)}</li>`).join("") + "</ul>";
+}
+function permissionCard(d) {
+  endBlock();
+  const tc = d.toolCall || {};
+  const el = add(div("card permission"));
+  el.innerHTML = `<div class="head"><span>⚠️</span><span class="title"></span><span class="chip">нужно разрешение</span></div>
+    <div class="opts"></div>`;
+  el.querySelector(".title").textContent = tc.title || "Агент просит разрешение";
+  const input = tc.rawInput != null ? JSON.stringify(tc.rawInput, null, 2) : contentText(tc.content);
+  if (input) el.insertAdjacentHTML("beforeend", `<details open><summary>что именно</summary><pre class="diff">${renderDiffPre(input)}</pre></details>`);
+  const opts = el.querySelector(".opts");
+  if (d.autoPolicy) {
+    opts.innerHTML = `<span class="chip">политика сессии: ${d.autoPolicy === "allow" ? "разрешать" : "отклонять"}</span>`;
+  } else {
+    (d.options || []).forEach((o) => {
+      const b = document.createElement("button");
+      b.className = "btn small" + (o.kind && o.kind.startsWith("allow") ? " primary" : "");
+      b.textContent = o.name || o.optionId;
+      b.onclick = () => vote(d.requestId, { outcome: "selected", optionId: o.optionId }, el);
+      opts.appendChild(b);
+    });
+  }
+  view.perms[d.requestId] = { el, options: d.options || [] };
+}
+async function vote(rid, body, el) {
+  el.querySelectorAll(".opts button").forEach((b) => (b.disabled = true));
+  try { await api("POST", "/session/" + currentId + "/permission/" + rid, body); }
+  catch (e) { el.querySelectorAll(".opts button").forEach((b) => (b.disabled = false)); alert(e.message); }
+}
+function permissionResolved(d) {
+  const p = view.perms[d.requestId];
+  if (!p) return;
+  const o = d.outcome || {};
+  const opt = p.options.find((x) => x.optionId === o.optionId);
+  const by = { client: "", policy: " (политика)", timeout: " (таймаут)" }[d.by] ?? " (" + d.by + ")";
+  const text = o.outcome === "selected" ? "Выбрано: " + (opt ? opt.name : o.optionId) + by : "Отменено" + by;
+  p.el.querySelector(".opts").outerHTML = `<div class="done"></div>`;
+  p.el.querySelector(".done").textContent = text;
+  p.el.querySelector(".chip").textContent = o.outcome === "selected" && opt && opt.kind && opt.kind.startsWith("allow") ? "разрешено" : "отклонено";
+  const det = p.el.querySelector("details"); if (det) det.open = false;
+}
+function banner(cls, title, pre) {
+  endBlock();
+  const el = add(div("banner " + cls));
+  el.textContent = title;
+  if (pre) { const p = document.createElement("pre"); p.textContent = pre; el.appendChild(p); }
+  return el;
+}
+
+function handle(ev) {
+  const d = ev.data || {};
+  view.events.push(ev);
+  if (view.events.length > 1500) view.events.splice(0, 500);
+  switch (ev.type) {
+    case "session_update": {
+      const u = d.update || {};
+      switch (u.sessionUpdate) {
+        case "user_message_chunk": {
+          endBlock(); view.plan = null;
+          const src = (u._meta && u._meta.source) || "";
+          const el = add(div("msg user", `<div class="who">${src && src !== "web" ? '<span class="tag">' + esc(src) + "</span>" : ""}Вы</div><div class="body"></div>`));
+          el.querySelector(".body").textContent = (u.content && u.content.text) || "";
+          showThinking();
+          break;
+        }
+        case "agent_message_chunk":
+        case "agent_thought_chunk":
+          if (u.content && u.content.type === "text" && u.content.text) appendChunk(u.sessionUpdate, u.content.text);
+          break;
+        case "tool_call": case "tool_call_update": toolCard(u); break;
+        case "plan": planCard(u); break;
+        default: break; // usage_update, current_mode_update и пр. — в заголовке/диагностике
+      }
+      break;
+    }
+    case "permission_request": permissionCard(d); break;
+    case "permission_resolved": permissionResolved(d); break;
+    case "turn_complete": {
+      endBlock(); removeThinking();
+      TL().querySelectorAll("details.thought").forEach((x) => (x.open = false));
+      const m = add(div("meta"));
+      m.textContent = (d.stopReason === "cancelled" ? "⏹ остановлено" : "✓ " + (d.stopReason || "готово")) +
+        (d.elapsedMs != null ? " · " + (d.elapsedMs / 1000).toFixed(1) + " с" : "");
+      break;
+    }
+    case "turn_error": removeThinking(); if (view.died) break; view.turnErr = banner("error", "Ошибка хода: " + d.message + (d.code ? " [" + d.code + "]" : ""), d.stderrTail); break;
+    case "session_died": removeThinking(); view.died = true; if (view.turnErr) view.turnErr.remove(); banner("error", "Агент упал: " + (d.error || d.reason), d.stderrTail); break;
+    case "session_closed": banner("info", "Сессия закрыта (" + d.reason + ")"); break;
+    case "agent_stderr": view.stderr.push(d.text); if (view.stderr.length > 2000) view.stderr.splice(0, 500); break;
+    case "state_resync_required": banner("info", "Часть истории вытеснена из журнала сервера"); break;
+    default: break;
+  }
+  if (["agent_stderr"].includes(ev.type) || diagTab === "events") scheduleDiag();
+  if (["session_state", "turn_complete", "turn_error", "session_died", "session_closed", "permission_request",
+       "permission_resolved", "approval_mode_changed", "pending_prompt_added"].includes(ev.type)) refreshList();
+}
+
+// ---------- диагностика ----------
+let diagTab = "stderr", diagTimer = null;
+function scheduleDiag() { if (!diagTimer && $("diag").classList.contains("open")) diagTimer = setTimeout(updateDiag, 200); }
+function updateDiag() {
+  diagTimer = null;
+  const n = view ? view.stderr.length : 0;
+  $("diagBtn").textContent = "Диагностика" + (n ? " (" + n + ")" : "");
+  if (!view || !$("diag").classList.contains("open")) return;
+  const pre = $("diagText"), stick = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  pre.textContent = diagTab === "stderr"
+    ? (view.stderr.join("") || "(stderr агента пуст)")
+    : view.events.slice(-400).map((e) => (e.id || "-") + " " + new Date((e._meta || {}).serverTimestamp || Date.now()).toLocaleTimeString() + " " + e.type + " " + JSON.stringify(e.data).slice(0, 600)).join("\n");
+  if (stick) pre.scrollTop = pre.scrollHeight;
+}
+$("diagBtn").onclick = () => { $("diag").classList.toggle("open"); updateDiag(); };
+$("diagClose").onclick = () => $("diag").classList.remove("open");
+document.querySelectorAll("#diag .tabs [data-tab]").forEach((b) => b.onclick = () => {
+  diagTab = b.dataset.tab;
+  document.querySelectorAll("#diag .tabs [data-tab]").forEach((x) => x.classList.toggle("on", x === b));
+  updateDiag();
+});
+setInterval(() => { if (view && view.stderr.length) updateDiag(); }, 2000);
+
+// ---------- действия ----------
+async function newSession() {
+  const body = { sessionScope: "thread", permissionPolicy: $("policy").value };
+  if ($("cwd").value.trim()) body.cwd = $("cwd").value.trim();
+  $("newSession").disabled = true;
+  try {
+    const s = await api("POST", "/session", body);
+    await refreshList();
+    open(s.sessionId);
+    return s.sessionId;
+  } catch (e) { alert("Не удалось создать сессию:\n" + e.message); return null; }
+  finally { $("newSession").disabled = false; }
+}
+async function send() {
+  const text = $("input").value.trim();
+  if (!text) return;
+  let sid = currentId;
+  const s = sessions.find((x) => x.sessionId === sid);
+  if (!sid || !s || !["idle", "running"].includes(s.state)) {
+    $("send").disabled = true;
+    sid = await newSession();
+    $("send").disabled = false;
+    if (!sid) return;
+  }
+  $("input").value = ""; autosize();
+  try { await api("POST", "/session/" + sid + "/prompt", { prompt: [{ type: "text", text }], source: "web" }); }
+  catch (e) { $("input").value = text; alert(e.message); }
+}
+function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 240) + "px"; }
+$("input").addEventListener("input", autosize);
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!$("send").disabled) send(); }
+});
+$("send").onclick = send;
+$("newSession").onclick = newSession;
+$("cancel").onclick = () => api("POST", "/session/" + currentId + "/cancel").catch((e) => alert(e.message));
+$("closeSession").onclick = () => { if (confirm("Закрыть сессию? Процесс агента будет остановлен.")) api("DELETE", "/session/" + currentId).then(refreshList).catch((e) => alert(e.message)); };
+$("mode").onchange = () => api("POST", "/session/" + currentId + "/approval-mode", { mode: $("mode").value }).catch((e) => { alert(e.message); refreshList(); });
+$("menu").onclick = () => $("side").classList.toggle("open");
+
+(async () => {
+  resetView();
+  await refreshList();
+  const linked = new URLSearchParams(location.search).get("session");  // ссылка из почтового приложения
+  if (linked) currentId = linked;
+  if (currentId && sessions.some((s) => s.sessionId === currentId)) open(currentId);
+  else { currentId = null; emptyState(); renderList(); }
+  $("input").focus();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+workspace/
+mail_data/
+.DS_Store
+.claude/
+mail_test/
