@@ -12,35 +12,39 @@
 
 ## Из чего состоит
 
-Работают два процесса на одной машине:
+Это только почта. Агента запускает отдельный сервис из репозитория [gigacode](https://github.com/errypie/gigacode),
+поэтому нужны две папки и два процесса на одной машине:
 
 ```text
-Exchange (EWS) ──> mailbot :8770 ──> сервис GigaCode :8765 ──> gigacode --acp
-                   письма, база,     живые сессии агента,
-                   веб-интерфейс     веб-чат и HTTP API
+Exchange (EWS) ──> mail-tools :8770 ──> gigacode :8765 ──> gigacode --acp
+                   письма, база,        живые сессии агента,
+                   веб-интерфейс        веб-чат и HTTP API
 ```
 
-| Часть | Файлы | Что делает |
-|---|---|---|
-| Почта | `mailbot/` | Опрос Exchange, база писем, категории, шифрование секретов, веб-интерфейс |
-| Сервис GigaCode | `server.py`, `sessions.py`, `acp_client.py`, `gigacode_runner.py`, `static/` | Запускает `gigacode --acp`, отдаёт чат и HTTP API |
-| Клиент | `client.py` | Через него почта обращается к сервису GigaCode |
-| Тестовые заглушки | `tests/` | Имитация агента для проверки без настоящего CLI |
+| Папка | Что внутри |
+|---|---|
+| `mail-tools/mailbot/` | Опрос Exchange, база писем, категории, шифрование секретов, веб-интерфейс |
+| `mail-tools/tests/` | Тестовый агент для проверки почты без настоящего CLI |
+| `gigacode/` | Отдельный репозиторий: запускает `gigacode --acp`, отдаёт чат и HTTP API |
 
 ## Что нужно
 
 - Python 3.9 или новее.
+- Репозиторий [gigacode](https://github.com/errypie/gigacode) рядом с этим.
 - CLI `gigacode`, который запускается из терминала и уже авторизован. Проверка: `gigacode --help`.
 - Доступ к серверу Exchange по EWS, обычно через VPN или рабочую сеть.
 - Адрес сервера Exchange, адрес ящика, логин и пароль.
 - Корневой сертификат компании, если сервер использует внутренний удостоверяющий центр.
 
-Сервису GigaCode внешние библиотеки не нужны. Почте нужны `exchangelib` и `cryptography`.
+Сервису gigacode внешние библиотеки не нужны. Почте нужны `exchangelib` и `cryptography`.
 
 ## Установка
 
 macOS и Linux:
 
+```bash
+git clone https://github.com/errypie/gigacode.git
+```
 ```bash
 git clone https://github.com/errypie/mail-tools.git
 ```
@@ -60,6 +64,7 @@ pip install -r mailbot/requirements.txt
 Windows (PowerShell):
 
 ```powershell
+git clone https://github.com/errypie/gigacode.git
 git clone https://github.com/errypie/mail-tools.git
 cd mail-tools
 py -3 -m venv .venv
@@ -71,9 +76,9 @@ pip install -r mailbot/requirements.txt
 
 ## Запуск
 
-Нужны два терминала. Команды выполняйте из корня репозитория с активным окружением `.venv`.
+Нужны два терминала.
 
-**Терминал 1, сервис GigaCode.** В `--workdir` укажите каталог, где агент будет работать по умолчанию:
+**Терминал 1, сервис GigaCode.** Запускайте из папки `gigacode`. В `--workdir` укажите каталог, где агент будет работать по умолчанию:
 
 ```bash
 python3 server.py --workdir /путь/к/рабочему/каталогу
@@ -87,7 +92,7 @@ python3 server.py --workdir /путь/к/каталогу --cmd "node /полн�
 
 Откройте http://127.0.0.1:8765. Если чат отвечает, агент работает.
 
-**Терминал 2, почта:**
+**Терминал 2, почта.** Запускайте из папки `mail-tools` с активным окружением `.venv`:
 
 ```bash
 python3 -m mailbot
@@ -288,22 +293,7 @@ Markdown с подсветкой кода, путей и переменных, �
 | `--data-dir` | `MAILBOT_DATA` | `./mail_data` |
 | `--fake-mail` | | Тестовые письма вместо Exchange |
 
-Сервис GigaCode, `python3 server.py`:
-
-| Параметр | Переменная | По умолчанию | Что делает |
-|---|---|---|---|
-| `--host` | `GIGACODE_HOST` | `127.0.0.1` | Адрес |
-| `--port` | `GIGACODE_PORT` | `8765` | Порт |
-| `--workdir` | `GIGACODE_WORKDIR` | `./workspace` | Каталог агента |
-| `--cmd` | | `gigacode` из `PATH` | Команда запуска CLI |
-| `--approval-mode` | `GIGACODE_APPROVAL_MODE` | `auto-edit` | Режим подтверждений |
-| `--api-permission` | `GIGACODE_API_PERMISSION` | `reject` | Разрешения для разовых запросов `/api/chat` и `/v1` |
-| `--token` | `GIGACODE_TOKEN` | нет | Токен доступа к API |
-| `--timeout` | `GIGACODE_TIMEOUT` | `1800` | Таймаут запроса, с |
-| `--max-sessions` | `GIGACODE_MAX_SESSIONS` | `16` | Лимит живых сессий |
-| `--idle-timeout` | `GIGACODE_IDLE_TIMEOUT` | `1800` | Закрытие простаивающих сессий, с |
-
-Полный список: `python3 server.py --help`.
+Параметры сервиса GigaCode описаны в его репозитории, полный список: `python3 server.py --help`.
 
 ## Если что-то не работает
 
@@ -312,14 +302,14 @@ Markdown с подсветкой кода, путей и переменных, �
 | Что видно | Что проверить |
 |---|---|
 | `Не хватает зависимости` | Активируйте `.venv` и выполните `pip install -r mailbot/requirements.txt` |
-| `No module named client` | Запускайте `python3 -m mailbot` из корня репозитория |
+| `No module named mailbot` | Запускайте `python3 -m mailbot` из папки `mail-tools` |
 | Exchange отклонил вход (401) | Логин в формате `DOMAIN\user` или `user@example.com`, тип авторизации, пароль |
 | `CERTIFICATE_VERIFY_FAILED` | Укажите путь к корневому сертификату в настройках |
 | Имя сервера не находится, таймаут | VPN, имя сервера без `https://`, прокси |
 | Проблемы из-за прокси | Задайте `NO_PROXY=127.0.0.1,localhost,<сервер Exchange>` перед запуском обоих сервисов |
 | `ErrorNonExistentMailbox`, `ErrorAccessDenied` | Адрес ящика и права учётной записи |
 | Exchange ограничивает запросы | Увеличьте интервал опроса |
-| GigaCode: `Connection refused` | Запущен ли `server.py`, верен ли адрес в настройках |
+| GigaCode: `Connection refused` | Запущен ли `server.py` из папки `gigacode`, верен ли адрес в настройках |
 | GigaCode: `Unauthorized` | Укажите токен в настройках |
 | Агент не запустился | `gigacode --help` в том же терминале, при необходимости `--cmd`. stderr агента есть в чате на вкладке «Диагностика» |
 | Ответ модели не в JSON | Общий промпт классификации и ссылка «Как модель это разбирала» |
@@ -329,12 +319,12 @@ Markdown с подсветкой кода, путей и переменных, �
 
 ## Проверка без Exchange и gigacode
 
-Запустите из корня репозитория в двух терминалах.
+Нужны два терминала. Сервис запускается из папки `gigacode`, но с тестовым агентом из `mail-tools`.
 
 macOS и Linux:
 
 ```bash
-python3 server.py --cmd "python3 $PWD/tests/fake_acp_agent.py"
+python3 server.py --cmd "python3 /полный/путь/к/mail-tools/tests/fake_acp_agent.py"
 ```
 ```bash
 python3 -m mailbot --fake-mail --data-dir ./mail_test
@@ -343,26 +333,11 @@ python3 -m mailbot --fake-mail --data-dir ./mail_test
 Windows (PowerShell):
 
 ```powershell
-python server.py --cmd "python $PWD\tests\fake_acp_agent.py"
+python server.py --cmd "python C:\полный\путь\к\mail-tools\tests\fake_acp_agent.py"
 python -m mailbot --fake-mail --data-dir .\mail_test
 ```
 
 Откройте http://127.0.0.1:8770 и задайте пароль. После входа при каждом опросе будет приходить новое тестовое письмо, всего четыре.
-Тестовый агент разберёт их по ключевым словам. Путь к заглушке должен быть полным.
+Тестовый агент разберёт их по ключевым словам.
 
 Каталог `mail_test/` можно удалить после проверки.
-
-## Чат и HTTP API
-
-Сервис GigaCode можно использовать и без почты. На http://127.0.0.1:8765 работает чат с живыми сессиями,
-а другие программы могут обращаться к API:
-
-```bash
-curl http://127.0.0.1:8765/api/chat -H "Content-Type: application/json" -d '{"prompt": "Привет"}'
-```
-```bash
-curl http://127.0.0.1:8765/v1/chat/completions -H "Content-Type: application/json" -d '{"model": "gigacode", "messages": [{"role": "user", "content": "Привет"}]}'
-```
-
-Все маршруты перечислены в начале `server.py`. Запросы из API тоже видны в чате. По умолчанию такие запросы отклоняют
-действия агента. Чтобы разрешить инструменты и скиллы, запустите сервис с `--api-permission allow`.

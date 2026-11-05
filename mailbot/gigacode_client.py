@@ -1,21 +1,7 @@
-"""Клиент к server.py для использования из других проектов (только стандартная библиотека).
-
-    from client import GigaCodeClient
-    gc = GigaCodeClient("http://127.0.0.1:8765")
-    print(gc.ask("Объясни, что делает этот regex: ^\\d{3}$"))
-
-    # живая сессия со всеми событиями агента
-    sid = gc.create_session(permission_policy="allow")
-    gc.prompt(sid, "Напиши hello world на Go")
-    for ev in gc.events(sid, last_event_id=0, until_turn_end=True):
-        print(ev["type"])
-
-Из консоли:  python client.py "вопрос"
-"""
+"""HTTP-клиент к сервису GigaCode (`server.py` из репозитория gigacode)."""
 from __future__ import annotations
 
 import json
-import sys
 import urllib.error
 import urllib.request
 from typing import Iterator, List, Optional
@@ -125,11 +111,3 @@ class GigaCodeClient:
                         return
                     if until_turn_end and ev.get("type") in ("turn_complete", "turn_error"):
                         return
-
-
-if __name__ == "__main__":
-    question = " ".join(sys.argv[1:]) or sys.stdin.read()
-    for part in GigaCodeClient().stream(question):
-        sys.stdout.write(part)
-        sys.stdout.flush()
-    print()

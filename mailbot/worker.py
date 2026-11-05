@@ -7,10 +7,9 @@ from datetime import datetime
 from typing import Callable, Optional
 from urllib.error import URLError
 
-from client import GigaCodeClient
-
 from .classifier import ClassifyError, build_prompt, lines, parse_response
 from .db import Database, now_iso
+from .gigacode_client import GigaCodeClient
 from .health import hint_for, timed
 from .mail_source import MailError, fetch_since, sender_allowed
 from .vault import Vault
