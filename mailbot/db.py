@@ -142,8 +142,11 @@ class Database:
         with self.conn() as c:
             c.execute("PRAGMA journal_mode=WAL")
             c.executescript(SCHEMA)
-            if "entities" not in {r["name"] for r in c.execute("PRAGMA table_info(emails)")}:
+            columns = {r["name"] for r in c.execute("PRAGMA table_info(emails)")}
+            if "entities" not in columns:
                 c.execute("ALTER TABLE emails ADD COLUMN entities TEXT NOT NULL DEFAULT '{}'")
+            if "category_manual" not in columns:
+                c.execute("ALTER TABLE emails ADD COLUMN category_manual INTEGER NOT NULL DEFAULT 0")
             known = {r["name"] for r in c.execute("PRAGMA table_info(categories)")}
             for column in CATEGORY_ENV_FIELDS:  # базы, созданные до появления окружения категории
                 if column not in known:
@@ -304,7 +307,9 @@ class Database:
 
     def save_classification(self, eid: int, res: dict, session_id: Optional[str]) -> None:
         with self.conn() as c:
-            c.execute("UPDATE emails SET status='classified', category=?, confidence=?, summary=?, reason=?, jira_key=?, "
+            # Категорию, выбранную вручную, модель не меняет. Саммари и сущности обновляются.
+            c.execute("UPDATE emails SET status='classified', category=CASE WHEN category_manual=1 THEN category ELSE ? END, "
+                      "confidence=?, summary=?, reason=?, jira_key=?, "
                       "recommend_action=?, action_hint=?, entities=?, session_id=?, classified_at=?, error=NULL, next_retry_at=NULL "
                       "WHERE id=?",
                       (res["category"], res["confidence"], res["summary"], res["reason"], res["jira_key"],
@@ -328,9 +333,19 @@ class Database:
             c.execute("UPDATE emails SET status='new', attempts=?, next_retry_at=?, error=? WHERE id=?",
                       (attempts, retry_at, error[:4000], eid))
 
-    def reset_for_classification(self, eid: int) -> None:
+    def set_category(self, eid: int, name: str) -> None:
         with self.conn() as c:
-            c.execute("UPDATE emails SET status='new', attempts=0, next_retry_at=NULL, error=NULL WHERE id=?", (eid,))
+            old = c.execute("SELECT category FROM emails WHERE id=?", (eid,)).fetchone()["category"]
+            c.execute("UPDATE emails SET category=?, category_manual=1, "
+                      "error=CASE WHEN status='failed' THEN NULL ELSE error END, "
+                      "status=CASE WHEN status='failed' THEN 'classified' ELSE status END WHERE id=?", (name, eid))
+            self._log(c, eid, "category", "{} → {}, вручную".format(old or "нет", name))
+
+    def reset_for_classification(self, eid: int) -> None:
+        """Кнопка у письма: решение снова за моделью, даже если категорию меняли вручную."""
+        with self.conn() as c:
+            c.execute("UPDATE emails SET status='new', attempts=0, next_retry_at=NULL, error=NULL, category_manual=0 "
+                      "WHERE id=?", (eid,))
             self._log(c, eid, "reclassify", None)
 
     def reclassify_all(self) -> int:

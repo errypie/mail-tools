@@ -294,7 +294,17 @@ class Handler(BaseHTTPRequestHandler):
                                "prompt": render_action(cat["action_template"], email, cat["files"], entities)}
         email["environment"] = {k: cat[k] for k in CATEGORY_ENV_FIELDS if cat[k]} if cat else {}
         email["gigacode_url"] = self.ctx.db.settings()["gigacode_url"]
+        email["categories"] = [{"name": c["name"], "title": c["title"]} for c in self.ctx.db.categories()]
         self._json(200, email)
+
+    @route("POST", "/api/emails/{eid}/category")
+    def set_category(self, eid):
+        email = self._email_or_404(eid)
+        name = str(self._body().get("category") or "")
+        if not self.ctx.db.category(name):
+            raise HttpError(400, "Нет такой категории")
+        self.ctx.db.set_category(email["id"], name)
+        self._json(200, {"ok": True})
 
     @route("POST", "/api/emails/{eid}/reclassify")
     def reclassify(self, eid):
