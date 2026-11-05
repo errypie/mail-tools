@@ -106,10 +106,10 @@ class Worker:
     def classify(self, email: dict) -> None:
         s = self.db.settings()
         categories = self.db.categories()
-        prompt = build_prompt(email, categories, s["classify_prompt"], int(s["max_body_chars"]))
+        prompt = build_prompt(email, categories, s["classify_prompt"], int(s["max_body_chars"]), s["entities"])
         try:
             res = self.gigacode()._json("POST", "/api/chat", {"prompt": prompt})
-            parsed = parse_response(res.get("response") or "", email, categories)
+            parsed = parse_response(res.get("response") or "", email, categories, s["entities"])
             self.db.save_classification(email["id"], parsed, res.get("sessionId"))
             self.status.update(classifier_error=None, classifier_ok_at=now_iso())
             self.db.resolve_service_errors("gigacode")
@@ -125,8 +125,8 @@ class Worker:
         """Пробный разбор с несохранёнными промптами: в письмо ничего не записывается."""
         s = self.db.settings()
         res = self.gigacode()._json("POST", "/api/chat", {
-            "prompt": build_prompt(email, categories, s["classify_prompt"], int(s["max_body_chars"]))})
-        return dict(parse_response(res.get("response") or "", email, categories), raw=res.get("response"),
+            "prompt": build_prompt(email, categories, s["classify_prompt"], int(s["max_body_chars"]), s["entities"])})
+        return dict(parse_response(res.get("response") or "", email, categories, s["entities"]), raw=res.get("response"),
                     sessionId=res.get("sessionId"))
 
     # --- статус -----------------------------------------------------------

@@ -7,6 +7,7 @@ CRASH — процесс падает посреди хода.
 """
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -102,7 +103,8 @@ def handle_prompt(rid, params):
 
 def classify(rid, sid, text):
     """Ответ на промпт mailbot: категория по ключевым словам письма."""
-    mail = text.split("<<<EMAIL", 1)[1]
+    head, mail = text.split("<<<EMAIL", 1)
+    entities = {name: "тест-" + name for name in re.findall(r'"(\w+)": <значение или null>', head)}
     if "BROKEN" in mail:
         answer = "это не JSON"
     else:
@@ -111,7 +113,8 @@ def classify(rid, sid, text):
         answer = "```json\n" + json.dumps({
             "category": category, "confidence": 0.9, "summary": "Тестовое саммари письма.",
             "reason": "по ключевым словам", "jira_key": "ABC-123" if category == "RELEASE" else None,
-            "recommend_action": category == "RELEASE", "action_hint": "Проверить релиз" if category == "RELEASE" else ""},
+            "recommend_action": category == "RELEASE", "action_hint": "Проверить релиз" if category == "RELEASE" else "",
+            "entities": entities},
             ensure_ascii=False) + "\n```"
     update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": answer}})
     send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})

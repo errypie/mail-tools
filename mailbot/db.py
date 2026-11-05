@@ -120,6 +120,7 @@ DEFAULT_SETTINGS = {
     "skill_permission": "allow",
     "max_body_chars": 12000,
     "classify_prompt": DEFAULT_CLASSIFY_PROMPT,
+    "entities": [],
 }
 
 CATEGORY_ENV_FIELDS = ("cwd", "files", "include_dirs", "approval_mode", "permission", "model")
@@ -141,6 +142,8 @@ class Database:
         with self.conn() as c:
             c.execute("PRAGMA journal_mode=WAL")
             c.executescript(SCHEMA)
+            if "entities" not in {r["name"] for r in c.execute("PRAGMA table_info(emails)")}:
+                c.execute("ALTER TABLE emails ADD COLUMN entities TEXT NOT NULL DEFAULT '{}'")
             known = {r["name"] for r in c.execute("PRAGMA table_info(categories)")}
             for column in CATEGORY_ENV_FIELDS:  # базы, созданные до появления окружения категории
                 if column not in known:
@@ -302,10 +305,11 @@ class Database:
     def save_classification(self, eid: int, res: dict, session_id: Optional[str]) -> None:
         with self.conn() as c:
             c.execute("UPDATE emails SET status='classified', category=?, confidence=?, summary=?, reason=?, jira_key=?, "
-                      "recommend_action=?, action_hint=?, session_id=?, classified_at=?, error=NULL, next_retry_at=NULL "
+                      "recommend_action=?, action_hint=?, entities=?, session_id=?, classified_at=?, error=NULL, next_retry_at=NULL "
                       "WHERE id=?",
                       (res["category"], res["confidence"], res["summary"], res["reason"], res["jira_key"],
-                       int(res["recommend_action"]), res["action_hint"], session_id, now_iso(), eid))
+                       int(res["recommend_action"]), res["action_hint"], json.dumps(res.get("entities") or {}, ensure_ascii=False),
+                       session_id, now_iso(), eid))
             self._log(c, eid, "classified", "{} ({})".format(res["category"], res["confidence"]))
 
     def classification_failed(self, eid: int, error: str, attempts: int) -> None:

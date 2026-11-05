@@ -101,6 +101,7 @@ body.solo .bodytext { max-height: none; }
 .meta { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .card { background: var(--panel); border-radius: 14px; padding: 12px 16px; margin: 12px 0; box-shadow: var(--shadow); }
 .card h3 { font-size: 14px; font-weight: 500; color: var(--accent); margin: 0 0 6px; }
+.card h3.subhead { margin-top: 16px; }
 .card.action { background: var(--warn-bg); }
 .card.action h3 { color: var(--warn); }
 .card.error { background: var(--danger-bg); color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -184,6 +185,13 @@ nav button.add { color: var(--accent); }
 .ct-inline select { min-width: 0; flex: 1; }
 .ct-form { max-width: 820px; }
 .mono { font-family: var(--mono); font-size: 13px; line-height: 1.6; }
+.entRow { border-top: 1px solid var(--border); padding: 8px 0 12px; }
+.entRow:first-child { border-top: 0; }
+.entRow .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.varRow { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.varRow button { border: 0; border-radius: 8px; padding: 1px 8px; background: var(--code); color: var(--info); cursor: pointer; font: 12px/1.7 var(--mono); }
+.varRow button.none { color: var(--muted); }
+.runPreview { white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.55 var(--mono); max-height: 260px; overflow-y: auto; margin-top: 6px; }
 .ct-out { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .ct-out h3 { font-size: 13px; margin: 0 0 4px; color: var(--muted); font-weight: 600; }
 .ct-out pre { margin: 0; background: var(--panel); border-radius: 14px; box-shadow: var(--shadow); padding: 10px 12px; height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.55 var(--mono); }
@@ -457,6 +465,15 @@ nav button.add { color: var(--accent); }
       <h3>Общий промпт классификации</h3>
       <textarea id="s_classify_prompt" rows="4"></textarea>
       <div class="hint">Идёт перед промптами категорий. Сами категории настраиваются на странице «Категории».</div>
+    </div>
+
+    <div class="card" data-set="entities" data-title="Сущности" hidden>
+      <h3>Сущности</h3>
+      <div class="hint">Значения, которые модель достаёт из письма, как Jira-ключ. Каждая сущность становится переменной {код} в промптах. Значения появляются у новых писем, для старых нажмите «Переразобрать письма» на странице категорий.</div>
+      <div id="entityList"></div>
+      <div class="actions"><button class="btn small" id="entityAdd" type="button">+ Новая сущность</button></div>
+      <h3 class="subhead">Встроенные переменные</h3>
+      <dl class="kv" id="builtinVars"></dl>
     </div>
 
     <div class="card" data-set="password" data-title="Пароль входа" hidden>
@@ -801,6 +818,8 @@ function renderDetail(m) {
   if (m.confidence != null) tags.appendChild(el("span", "tag", "уверенность " + Math.round(m.confidence * 100) + "%"));
   if (m.jira_key) tags.appendChild(el("span", "tag", m.jira_key));
   if (m.has_attachments) tags.appendChild(el("span", "tag", "есть вложения"));
+  const builtin = ["jira_key", "subject", "sender", "summary", "action_hint", "body", "files"];
+  m.variables.filter((v) => v.value && !builtin.includes(v.name)).forEach((v) => tags.appendChild(el("span", "tag", v.title + ": " + v.value)));
   w.appendChild(tags);
 
   if (m.error) w.appendChild(el("div", "card error", "Ошибка классификации (попыток: " + m.attempts + "):\n" + m.error));
@@ -821,8 +840,26 @@ function renderDetail(m) {
     c.appendChild(el("h3", "", recommended ? "Рекомендуется: " + m.action.title : "Запустить агента"));
     const t = el("textarea"); t.id = "runPrompt"; t.rows = SOLO_ID ? 12 : 5; t.dataset.email = m.id;
     t.value = draft !== null ? draft : m.action ? m.action.prompt : "";
-    t.placeholder = "Что сделать с этим письмом";
+    t.placeholder = "Что сделать с этим письмом. Например: подготовь ответ на письмо {subject} от {sender}";
     c.appendChild(t);
+    const values = Object.fromEntries(m.variables.map((v) => [v.name, v.value]));
+    const chips = el("div", "varRow"), look = el("details"), shown = el("div", "runPreview");
+    const showPreview = () => { shown.textContent = t.value.replace(/\{(\w+)\}/g, (all, k) => k in values ? values[k] : all); };
+    m.variables.forEach((v) => {
+      const b = el("button", v.value ? "" : "none", "{" + v.name + "}");
+      b.type = "button"; b.title = v.title + ": " + (v.value ? v.value.slice(0, 200) : "пусто");
+      b.onmousedown = (e) => e.preventDefault();  // курсор остаётся в поле
+      b.onclick = () => {
+        t.focus();
+        if (!document.execCommand("insertText", false, b.textContent)) { t.setRangeText(b.textContent, t.selectionStart, t.selectionEnd, "end"); showPreview(); }
+      };
+      chips.appendChild(b);
+    });
+    c.appendChild(chips);
+    look.appendChild(el("summary", "", "Что уйдёт агенту"));
+    look.appendChild(shown);
+    c.appendChild(look);
+    t.oninput = showPreview; showPreview();
     const env = m.environment, parts = [["каталог", env.cwd], ["доп. каталоги", env.include_dirs && env.include_dirs.split("\n").filter(Boolean).join(", ")],
       ["режим", env.approval_mode], ["разрешения", env.permission && PERMISSION_TEXT[env.permission]], ["модель", env.model]];
     const envText = parts.filter((p) => p[1]).map((p) => p[0] + ": " + p[1]).join(" · ");
@@ -896,7 +933,7 @@ async function refreshDetail() {
     if (SOLO_ID && $("app").hidden === false && !$("detailWrap").firstChild) $("detailWrap").appendChild(el("div", "empty", e.message));
     return;
   }
-  const sig = JSON.stringify([m.status, m.category, m.summary, m.error, m.attempts, m.runs, m.log.length]);
+  const sig = JSON.stringify([m.status, m.category, m.summary, m.error, m.attempts, m.runs, m.log.length, m.entities]);
   if (sig === detailSig) return;
   // не затираем текст, который пользователь сейчас правит
   if (document.activeElement && document.activeElement.id === "runPrompt") return;
@@ -907,6 +944,25 @@ async function refreshDetail() {
 // ---------- настройки ----------
 const TEXT_FIELDS = ["ews_server", "ews_email", "ews_username", "ews_auth", "ca_bundle", "poll_seconds", "initial_days",
   "gigacode_url", "skill_cwd", "skill_permission", "max_body_chars", "classify_prompt"];
+function addEntityRow(item) {
+  const r = el("div", "entRow"), pair = el("div", "pair");
+  const field = (key, label, tag, hint) => {
+    const box = el("div"), id = "ent" + Math.random().toString(36).slice(2), input = el(tag), l = el("label", "", label);
+    l.htmlFor = id; input.id = id; input.dataset.ent = key; input.value = item[key] || ""; input.placeholder = hint;
+    if (tag === "textarea") input.rows = 3;
+    box.append(l, input);
+    return box;
+  };
+  pair.append(field("name", "Код, он же {переменная}", "input", "contract_id"), field("title", "Название", "input", "Номер договора"));
+  const del = el("button", "btn small danger", "Удалить"), row = el("div", "actions");
+  del.type = "button"; del.onclick = () => r.remove();
+  row.appendChild(del);
+  r.append(pair, field("prompt", "Что искать в письме", "textarea", "Номер договора из темы или текста, обычно вида Д-2026/123"),
+    field("pattern", "Регулярное выражение, необязательно", "input", "Д-\\d{4}/\\d+"), row);
+  r.querySelector("[data-ent=pattern]").classList.add("mono");
+  $("entityList").appendChild(r);
+  return r;
+}
 async function openSettings() {
   const data = await api("GET", "/api/settings");
   const s = data.settings;
@@ -917,6 +973,10 @@ async function openSettings() {
   $("s_ews_password").value = ""; $("s_gigacode_token").value = "";
   $("s_ews_password").placeholder = s.has_ews_password ? "сохранён, пусто — не менять" : "";
   $("s_gigacode_token").placeholder = s.has_gigacode_token ? "сохранён, пусто — не менять" : "";
+  $("entityList").textContent = "";
+  (s.entities || []).forEach(addEntityRow);
+  const builtins = $("builtinVars"); builtins.textContent = "";
+  data.builtin_variables.forEach(([name, title]) => { builtins.appendChild(el("dt", "mono", "{" + name + "}")); builtins.appendChild(el("dd", "", title)); });
   $("settingsErr").textContent = ""; $("testResult").textContent = ""; $("pwResult").textContent = "";
   $("settings").hidden = false;
 }
@@ -927,6 +987,9 @@ async function saveSettings() {
   body.allowed_senders = lines("s_allowed_senders");
   body.blocked_senders = lines("s_blocked_senders");
   body.polling_enabled = $("s_polling_enabled").checked;
+  body.entities = [...$("entityList").children]
+    .map((r) => Object.fromEntries([...r.querySelectorAll("[data-ent]")].map((i) => [i.dataset.ent, i.value.trim()])))
+    .filter((e) => e.name || e.title || e.prompt || e.pattern);
   body.ews_password = $("s_ews_password").value;
   body.gigacode_token = $("s_gigacode_token").value;
   await api("PUT", "/api/settings", body);
@@ -945,6 +1008,7 @@ document.querySelectorAll("[data-set]").forEach((s) => {
   $("setNav").appendChild(r);
 });
 showSetSection("exchange");
+$("entityAdd").onclick = () => addEntityRow({}).querySelector("[data-ent=name]").focus();
 $("settingsBtn").onclick = () => openSettings().catch((e) => alert(e.message));
 $("settingsClose").onclick = () => { $("settings").hidden = true; };
 $("settingsSave").onclick = async () => {
@@ -971,9 +1035,12 @@ $("pwBtn").onclick = async () => {
 
 // ---------- категории ----------
 const CAT_FIELDS = ["name", "title", "prompt", "action_title", "action_template", "cwd", "files", "include_dirs", "approval_mode", "permission", "model"];
-const VARS = [["jira_key", "Jira-ключ"], ["subject", "тема письма"], ["sender", "адрес отправителя"], ["summary", "саммари"],
-  ["action_hint", "совет модели"], ["body", "текст письма"], ["files", "файлы из окружения"]];
-const VAR_NAMES = new Set(VARS.map((v) => v[0]));
+const VARS = [];  // встроенные и свои сущности, приходят с сервера
+const VAR_NAMES = new Set();
+function setVars(list) {
+  VARS.length = 0; VARS.push(...list);
+  VAR_NAMES.clear(); list.forEach((v) => VAR_NAMES.add(v[0]));
+}
 // `код`, **жирный**, {переменная}, путь или @файл после пробела
 const INLINE_RE = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\{\w+\})|((?<=^|[\s("'=])(?:@[\w.~\/-]+|@?(?:~\/|\.{1,2}\/|\/|[A-Za-z]:\\)[^\s`"'<>)]+))/g;
 const CODE_RE = /("[^"\n]*"|'[^'\n]*')|((?:#|\/\/).*$)|(\{\w+\})|(\b\d+(?:\.\d+)?\b)|(\b(?:def|class|return|if|else|elif|for|while|import|from|function|const|let|var|true|false|null|None|True|False|cd|export|echo)\b)/g;
@@ -1128,15 +1195,16 @@ function makeEditor(mount, opts) {
   });
   preview.hidden = divider.hidden = !matchMedia("(min-width: 1100px)").matches;
   eye.classList.toggle("on", !preview.hidden);
-  if (opts.vars) {
-    const row = el("div", "ed-vars");
+  const varRow = el("div", "ed-vars");
+  function drawVars() {
+    varRow.textContent = "";
     VARS.forEach(([name, title]) => {
       const b = el("button", "", "{" + name + "}"); b.type = "button"; b.title = title;
       b.onclick = () => { insert("{" + name + "}"); };
-      row.appendChild(b);
+      varRow.appendChild(b);
     });
-    mount.appendChild(row);
   }
+  if (opts.vars) mount.appendChild(varRow);
   mount.append(split, foot);
   ta.oninput = () => { opts.onInput(ta.value); draw(); if (current) current.scrollIntoView({ block: "nearest" }); };
   ["keyup", "click", "focus"].forEach((e) => ta.addEventListener(e, caret));
@@ -1156,7 +1224,7 @@ function makeEditor(mount, opts) {
       else if (/^\s+/.test(line)) { e.preventDefault(); insert("\n" + line.match(/^\s+/)[0]); }
     }
   };
-  return { set(value) { ta.value = value; draw(); }, focus() { ta.focus(); }, redraw: draw };
+  return { set(value) { ta.value = value; draw(); }, focus() { ta.focus(); }, redraw() { drawVars(); draw(); } };
 }
 
 const catPage = { items: [], current: null, tab: "prompt", emails: [], seq: 0 };
@@ -1238,6 +1306,7 @@ async function openCats(addNew) {
     const name = catPage.current && catPage.current.original;
     catPage.items = data.categories.map((c) => catItem(c, c.name));
     catPage.emails = data.emails;
+    setVars(data.variables);
     catPage.current = null;
     $("c_cwd").placeholder = data.default_cwd || "как у сервиса";
     $("c_permission_default").textContent = "как в настройках: " + PERMISSION_TEXT[data.default_permission];
@@ -1328,6 +1397,7 @@ $("catTest").onclick = async () => {
     tags.appendChild(el("span", "tag cat", x.category));
     tags.appendChild(el("span", "tag", "уверенность " + Math.round(x.confidence * 100) + "%"));
     if (x.jira_key) tags.appendChild(el("span", "tag", x.jira_key));
+    Object.entries(x.entities || {}).forEach(([k, v]) => tags.appendChild(el("span", "tag", k + ": " + v)));
     if (x.recommend_action) tags.appendChild(el("span", "tag act", "предложено действие"));
     c.appendChild(tags);
     if (x.summary) c.appendChild(el("div", "", x.summary));

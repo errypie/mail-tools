@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
-from .classifier import ClassifyError, build_prompt, render_action
+from .classifier import BUILTIN_VARIABLES, ClassifyError, build_prompt, render_action, substitute, variables
 from .db import CATEGORY_ENV_FIELDS, DEFAULT_CLASSIFY_PROMPT, Database
 from .health import hint_for
 from .mail_source import MailError
@@ -30,9 +30,11 @@ CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline
 SETTING_KEYS = {"ews_server": str, "ews_email": str, "ews_auth": str, "ca_bundle": str, "allowed_senders": list,
                 "blocked_senders": list,
                 "polling_enabled": bool, "poll_seconds": int, "initial_days": int, "gigacode_url": str,
-                "skill_cwd": str, "skill_permission": str, "max_body_chars": int, "classify_prompt": str}
+                "skill_cwd": str, "skill_permission": str, "max_body_chars": int, "classify_prompt": str,
+                "entities": list}
 SECRET_KEYS = ("ews_username", "ews_password", "gigacode_token")
 CATEGORY_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+ENTITY_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,31}$")
 
 
 class HttpError(Exception):
@@ -81,6 +83,25 @@ class Auth:
             if self.failures >= MAX_FAILURES:
                 self.locked_until = time.time() + LOCK_SECONDS
                 self.failures = 0
+
+
+def clean_entities(items: list) -> list:
+    out, seen = [], {name for name, _ in BUILTIN_VARIABLES}
+    for item in items:
+        name = str(item.get("name") or "").strip() if isinstance(item, dict) else ""
+        if not ENTITY_NAME_RE.match(name):
+            raise HttpError(400, "Код сущности: латиница, цифры и _, начинается с буквы, до 32 символов")
+        if name in seen:
+            raise HttpError(400, "Переменная {{{}}} уже есть".format(name))
+        seen.add(name)
+        pattern = str(item.get("pattern") or "").strip()
+        try:
+            re.compile(pattern)
+        except re.error as e:
+            raise HttpError(400, "Регулярное выражение {{{}}}: {}".format(name, e))
+        out.append({"name": name, "title": str(item.get("title") or name).strip(),
+                    "prompt": str(item.get("prompt") or "").strip(), "pattern": pattern})
+    return out
 
 
 class Context:
@@ -145,6 +166,9 @@ class Handler(BaseHTTPRequestHandler):
     @staticmethod
     def _session_cookie(token: str, max_age: int) -> str:
         return "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}".format(COOKIE, token, max_age)
+
+    def _variable_titles(self) -> list:
+        return list(BUILTIN_VARIABLES) + [(e["name"], e["title"]) for e in self.ctx.db.settings()["entities"]]
 
     def _email_or_404(self, eid: str) -> dict:
         email = self.ctx.db.get_email(int(eid)) if eid.isdigit() else None
@@ -261,10 +285,13 @@ class Handler(BaseHTTPRequestHandler):
     def email(self, eid):
         email = self._email_or_404(eid)
         cat = next((c for c in self.ctx.db.categories() if c["name"] == email["category"]), None)
+        entities = self.ctx.db.settings()["entities"]
+        values = variables(email, cat["files"] if cat else None, entities)
+        email["variables"] = [{"name": n, "title": t, "value": values[n]} for n, t in self._variable_titles()]
         email["action"] = None
         if cat and cat["action_template"]:
             email["action"] = {"title": cat["action_title"] or "Запустить",
-                               "prompt": render_action(cat["action_template"], email, cat["files"])}
+                               "prompt": render_action(cat["action_template"], email, cat["files"], entities)}
         email["environment"] = {k: cat[k] for k in CATEGORY_ENV_FIELDS if cat[k]} if cat else {}
         email["gigacode_url"] = self.ctx.db.settings()["gigacode_url"]
         self._json(200, email)
@@ -281,8 +308,10 @@ class Handler(BaseHTTPRequestHandler):
         prompt = str(body.get("prompt") or "").strip()
         if not prompt:
             raise HttpError(400, "Пустой запрос к агенту")
-        rid = self.ctx.worker.start_run(email["id"], str(body.get("title") or "Запуск")[:200], prompt,
-                                        self.ctx.db.category(email["category"]))
+        category = self.ctx.db.category(email["category"])
+        prompt = substitute(prompt, variables(email, category["files"] if category else None,
+                                              self.ctx.db.settings()["entities"]))
+        rid = self.ctx.worker.start_run(email["id"], str(body.get("title") or "Запуск")[:200], prompt, category)
         self._json(202, {"runId": rid})
 
     @route("POST", "/api/emails/reclassify-all")
@@ -317,7 +346,7 @@ class Handler(BaseHTTPRequestHandler):
         s["has_ews_password"] = bool(self.ctx.vault.get("ews_password"))
         s["has_gigacode_token"] = bool(self.ctx.vault.get("gigacode_token"))
         s["default_classify_prompt"] = DEFAULT_CLASSIFY_PROMPT
-        self._json(200, {"settings": s})
+        self._json(200, {"settings": s, "builtin_variables": BUILTIN_VARIABLES})
 
     @route("PUT", "/api/settings")
     def put_settings(self):
@@ -333,6 +362,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise HttpError(400, "Неверное значение {}".format(key))
         if values.get("skill_permission", "allow") not in ("allow", "ask", "reject"):
             raise HttpError(400, "skill_permission: allow, ask или reject")
+        if "entities" in values:
+            values["entities"] = clean_entities(values["entities"])
         if int(values.get("poll_seconds", 15)) < 5:
             raise HttpError(400, "Интервал опроса — не меньше 5 секунд")
         self.ctx.db.set_settings(values)
@@ -348,7 +379,7 @@ class Handler(BaseHTTPRequestHandler):
     @route("GET", "/api/categories")
     def get_categories(self):
         s = self.ctx.db.settings()
-        self._json(200, {"categories": self.ctx.db.categories(),
+        self._json(200, {"categories": self.ctx.db.categories(), "variables": self._variable_titles(),
                          "default_cwd": s["skill_cwd"], "default_permission": s["skill_permission"],
                          "emails": self.ctx.db.recent_emails()})
 
@@ -404,8 +435,10 @@ class Handler(BaseHTTPRequestHandler):
     def preview_category(self):
         email, draft, categories = self._trial(self._body())
         s = self.ctx.db.settings()
-        self._json(200, {"classify_prompt": build_prompt(email, categories, s["classify_prompt"], int(s["max_body_chars"])),
-                         "run_prompt": render_action(draft.get("action_template") or "", email, draft.get("files"))})
+        self._json(200, {"classify_prompt": build_prompt(email, categories, s["classify_prompt"], int(s["max_body_chars"]),
+                                                         s["entities"]),
+                         "run_prompt": render_action(draft.get("action_template") or "", email, draft.get("files"),
+                                                     s["entities"])})
 
     @route("POST", "/api/categories/test")
     def test_category(self):
