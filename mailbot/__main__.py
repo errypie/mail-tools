@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer
 
 def main():
     env = os.environ.get
-    ap = argparse.ArgumentParser(description="Автоматизация почты на GigaCode")
+    ap = argparse.ArgumentParser(description="GigaMail: почта и календарь Exchange с ИИ-инструментами GigaCode")
     ap.add_argument("--host", default=env("MAILBOT_HOST", "127.0.0.1"))
     ap.add_argument("--port", type=int, default=int(env("MAILBOT_PORT", "8770")))
     ap.add_argument("--data-dir", default=env("MAILBOT_DATA", "./mail_data"),
@@ -40,7 +40,7 @@ def main():
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.daemon_threads = True
-    print("mailbot: http://{}:{}  (данные: {})".format(args.host, args.port, os.path.abspath(args.data_dir)), flush=True)
+    print("GigaMail: http://{}:{}  (данные: {})".format(args.host, args.port, os.path.abspath(args.data_dir)), flush=True)
     print("Почта не опрашивается, пока вы не войдёте: ключ шифрования живёт только в памяти.", flush=True)
     try:
         httpd.serve_forever()

@@ -153,7 +153,7 @@ EOF
 
     cat > "$UNIT_DIR/mailbot.service" <<EOF
 [Unit]
-Description=GigaCode Mail
+Description=GigaMail
 Wants=gigacode-serve.service
 After=gigacode-serve.service
 
@@ -262,12 +262,12 @@ main() {
     wait_port "$venv/bin/python" "$GIGA_PORT" ||
         die "gigacode-serve не запустился. Журнал: journalctl --user -u gigacode-serve -n 50"
     wait_port "$venv/bin/python" "$MAIL_PORT" ||
-        die "почта не запустилась. Журнал: journalctl --user -u mailbot -n 50"
+        die "GigaMail не запустился. Журнал: journalctl --user -u mailbot -n 50"
 
     cat <<EOF
 
 Готово.
-  Почта:     http://127.0.0.1:$MAIL_PORT
+  GigaMail:  http://127.0.0.1:$MAIL_PORT
   GigaCode:  http://127.0.0.1:$GIGA_PORT
   Код:       $ROOT
   Данные:    $mail_dir/mail_data

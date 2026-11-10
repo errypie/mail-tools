@@ -58,6 +58,9 @@ def handle_prompt(rid, params):
     text = " ".join(p.get("text", "") for p in params["prompt"])
     sys.stderr.write("[fake] prompt received: {} chars\n".format(len(text)))
     sys.stderr.flush()
+    if "Ты помогаешь написать" in text:
+        compose(rid, sid, text)
+        return
     if "<<<EMAIL" in text:
         classify(rid, sid, text)
         return
@@ -101,6 +104,19 @@ def handle_prompt(rid, params):
     send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "cancelled" if sid in cancelled else "end_turn"}})
 
 
+def compose(rid, sid, text):
+    """Черновик письма для GigaMail: учитывает пожелания, чтобы тест видел, что они дошли."""
+    wish = re.search(r"Пожелания пользователя: (.*)", text)
+    lines = ["Добрый день!", "",
+             "Спасибо за письмо. Посмотрю материалы и вернусь с ответом до конца дня."]
+    if wish:
+        lines += ["", "Учёл пожелание: {}.".format(wish.group(1).strip().rstrip("."))]
+    lines += ["", "С уважением,"]
+    for part in ["\n".join(lines[:3]), "\n" + "\n".join(lines[3:])]:
+        update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": part}})
+    send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
+
+
 def classify(rid, sid, text):
     """Ответ на промпт mailbot: категория по ключевым словам письма."""
     head, mail = text.split("<<<EMAIL", 1)
@@ -108,14 +124,22 @@ def classify(rid, sid, text):
     if "BROKEN" in mail:
         answer = "это не JSON"
     else:
-        category = ("RELEASE" if "ABC-" in mail else "AUTO" if "[JIRA]" in mail else
+        invite = "Это приглашение на встречу." in head
+        category = ("MEETING" if invite else "RELEASE" if "ABC-" in mail else "AUTO" if "[JIRA]" in mail else
                     "SPAM" if "Скидки" in mail else "UNINFO")
-        answer = "```json\n" + json.dumps({
-            "category": category, "confidence": 0.9, "summary": "Тестовое саммари письма.",
-            "reason": "по ключевым словам", "jira_key": "ABC-123" if category == "RELEASE" else None,
-            "recommend_action": category == "RELEASE", "action_hint": "Проверить релиз" if category == "RELEASE" else "",
-            "entities": entities},
-            ensure_ascii=False) + "\n```"
+        data = {"category": category, "confidence": 0.9, "summary": "Тестовое саммари письма.",
+                "reason": "по ключевым словам", "jira_key": "ABC-123" if category == "RELEASE" else None,
+                "recommend_action": category == "RELEASE",
+                "action_hint": "Проверить релиз" if category == "RELEASE" else "", "entities": entities}
+        if invite:  # свободно — принять, митап — решит человек, занято — отклонить и предложить окно
+            if "Митап" in mail or "Для информации" in mail:
+                data["invite"] = {"action": "none", "reply": "", "propose": None}
+            elif "Пересечения в календаре:\nнет" in head:
+                data["invite"] = {"action": "accept", "reply": "Буду.", "propose": None}
+            else:
+                data["invite"] = {"action": "decline", "propose": 1, "reply":
+                                  "Добрый день! В это время у меня другая встреча. Могу в одно из окон:\n{free_slots}"}
+        answer = "```json\n" + json.dumps(data, ensure_ascii=False) + "\n```"
     update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": answer}})
     send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
 

@@ -1,16 +1,25 @@
 """Фоновая работа: опрос почты, классификация через GigaCode и запуск скиллов."""
 from __future__ import annotations
 
+import base64
+import os
+import shutil
 import threading
+import uuid
 import time
-from datetime import datetime
-from typing import Callable, Optional
+from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
+from typing import Callable, List, Optional
 from urllib.error import URLError
 
-from .classifier import ClassifyError, build_prompt, lines, parse_response
+from .classifier import ClassifyError, build_prompt, lines, parse_response, substitute, variables
 from .db import Database, now_iso
+from .meetings import ACTION_TEXT, ACTIONS, AUTO_MIN_CONFIDENCE, MAX_REPLY_CHARS, enrich_invite, fmt_range, parse_iso, \
+    search_window
 from .gigacode_client import GigaCodeClient
 from .health import hint_for, timed
+from . import calendar_ops, compose
+from .html_view import clean_fragment, render as render_html, text_document
 from .mail_source import MailError, fetch_since, sender_allowed
 from .vault import Vault
 
@@ -18,6 +27,12 @@ BATCH = 500
 GIGACODE_CHECK_TTL = 5  # с; статус опрашивают часто, а сам сервис проверяем не чаще этого
 SERVICE_DOWN_RETRY = 30  # с; как часто пробовать письмо, пока GigaCode недоступен
 MAX_SKIPPED_IDS = 5000
+ATTACHMENT_CACHE_BYTES = 64 * 1024 * 1024
+ROOMS_TTL = 600  # с; список переговорных меняется редко
+FOLDERS_TTL = 20  # с; список папок с числом непрочитанных
+CONTACTS_TTL = 60  # с; подсказки адресатов из истории пересчитываем не чаще
+OUTGOING_STYLE = 'font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1f1f1f'
+INLINE_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 class Worker:
@@ -32,6 +47,14 @@ class Worker:
                        "skipped_total": 0, "classifier_error": None, "classifier_ok_at": None}
         self._skipped_ids = set()
         self._gigacode_cache = (0.0, None)
+        self._att_cache: OrderedDict = OrderedDict()
+        self._cache_lock = threading.Lock()
+        self._contacts = (0.0, [])
+        self._folders = (0.0, [])
+        self._rooms = (0.0, None)
+        self._personal = (0.0, [])
+        self._box_lock = threading.Lock()  # опрос и действия пользователя не должны мешать синхронизации
+        self.uploads = os.path.join(os.path.dirname(os.path.abspath(db.path)), "uploads")
 
     def start(self):
         threading.Thread(target=self._poll_loop, daemon=True).start()
@@ -77,6 +100,7 @@ class Worker:
                     added += 1
             if newest:
                 self.db.set_state("watermark", newest)
+            self._sync_inbox()
             self.status.update(last_ok_at=now_iso(), last_error=None, last_new=added)
             self.db.resolve_service_errors("outlook")
         except MailError as e:
@@ -106,13 +130,15 @@ class Worker:
     def classify(self, email: dict) -> None:
         s = self.db.settings()
         categories = self.db.categories()
-        prompt = build_prompt(email, categories, s["classify_prompt"], int(s["max_body_chars"]), s["entities"])
+        self._refresh_invite(email, s)
+        prompt = self._prompt(email, categories, s)
         try:
             res = self.gigacode()._json("POST", "/api/chat", {"prompt": prompt})
             parsed = parse_response(res.get("response") or "", email, categories, s["entities"])
             self.db.save_classification(email["id"], parsed, res.get("sessionId"))
             self.status.update(classifier_error=None, classifier_ok_at=now_iso())
             self.db.resolve_service_errors("gigacode")
+            self._auto_reply(email["id"], s)
         except (ClassifyError, RuntimeError, OSError, ValueError) as e:
             self.status["classifier_error"] = str(e)[:500]
             self.db.record_service_error("gigacode", str(e))
@@ -124,10 +150,522 @@ class Worker:
     def classify_test(self, email: dict, categories: list) -> dict:
         """Пробный разбор с несохранёнными промптами: в письмо ничего не записывается."""
         s = self.db.settings()
-        res = self.gigacode()._json("POST", "/api/chat", {
-            "prompt": build_prompt(email, categories, s["classify_prompt"], int(s["max_body_chars"]), s["entities"])})
+        if email.get("invite"):
+            email = dict(email)
+            self._refresh_invite(email, s, save=False)
+        res = self.gigacode()._json("POST", "/api/chat", {"prompt": self._prompt(email, categories, s)})
         return dict(parse_response(res.get("response") or "", email, categories, s["entities"]), raw=res.get("response"),
                     sessionId=res.get("sessionId"))
+
+    @staticmethod
+    def _prompt(email: dict, categories: list, s: dict) -> str:
+        return build_prompt(email, categories, s["classify_prompt"], int(s["max_body_chars"]), s["entities"],
+                            s["invite_prompt"])
+
+    # --- календарь --------------------------------------------------------
+    def calendar(self):
+        """Тот же источник, что и для почты: календарь в том же ящике Exchange."""
+        if not self.vault.unlocked:
+            raise MailError("Войдите в веб-интерфейс, чтобы открыть календарь")
+        if self.source is None:
+            self.source = self.source_factory()
+        return self.source
+
+    def _refresh_invite(self, email: dict, s: dict, save: bool = True) -> None:
+        """Пересечения и окна считаем перед каждым разбором: календарь мог измениться с прихода письма."""
+        invite = email.get("invite")
+        if not invite or invite.get("kind") != "request" or not invite.get("start"):
+            return
+        try:
+            invite = enrich_invite(invite, self.calendar().events(*search_window(invite)), s)
+        except Exception as e:  # noqa: BLE001 — без календаря модель всё равно разберёт письмо
+            self.db.record_service_error("outlook", "Календарь: {}: {}".format(type(e).__name__, e))
+            return
+        email["invite"] = invite
+        if save:
+            self.db.set_invite(email["id"], invite)
+
+    def respond_invite(self, eid: int, action: str, reply: str = "", propose: Optional[int] = None,
+                       by: str = "user") -> dict:
+        email = self.db.get_email(eid)
+        invite = (email or {}).get("invite")
+        if not invite or invite.get("kind") != "request":
+            raise ValueError("Это письмо не приглашение на встречу")
+        if action not in ACTIONS:
+            raise ValueError("Неизвестный ответ: {}".format(action))
+        slots = invite.get("free_slots") or []
+        proposed = slots[propose - 1] if action != "accept" and propose and 1 <= propose <= len(slots) else None
+        if proposed and not invite.get("allow_new_time", True):
+            proposed = None  # организатор запретил предлагать другое время
+        text = substitute(reply or "", variables(email))[:MAX_REPLY_CHARS].strip()
+        response = {"action": action, "reply": text, "proposed": proposed, "by": by, "at": now_iso()}
+        if not self.db.claim_invite(eid, response):
+            raise ValueError("Ответ на это приглашение уже отправляется")
+        try:
+            result = self.calendar().respond([invite.get("item_id"), invite.get("calendar_id")], action, text, proposed)
+        except Exception as e:  # noqa: BLE001 — ошибку показываем у письма, кнопку можно нажать снова
+            response["error"] = "{}: {}".format(type(e).__name__, e)[:1000]
+            self.db.finish_invite(eid, response, False, response["error"])
+            raise RuntimeError(response["error"])
+        response["proposed_sent"] = bool(result.get("proposed"))
+        detail = "{}{}".format(ACTION_TEXT[action], ", автоматически" if by == "auto" else "")
+        if proposed:
+            detail += "; предложено {}".format(fmt_range(proposed["start"], proposed["end"])) if result.get("proposed") \
+                else "; Exchange не принял новое время, оно осталось только в тексте"
+        self.db.finish_invite(eid, response, True, detail)
+        return response
+
+    def _auto_reply(self, eid: int, s: dict) -> None:
+        """Авто-режим категории: решение модели уходит организатору без кнопки."""
+        email = self.db.get_email(eid)
+        invite, decision = email.get("invite"), email.get("invite_decision")
+        category = self.db.category(email.get("category")) or {}
+        if not (s["calendar_auto"] and category.get("invite_mode") == "auto" and invite and decision
+                and decision.get("action") in ACTIONS and not email.get("invite_state")
+                and not email.get("category_manual") and (email.get("confidence") or 0) >= AUTO_MIN_CONFIDENCE):
+            return
+        if invite.get("my_response") in ("Accept", "Decline", "Tentative"):
+            return  # уже ответили в Outlook
+        if parse_iso(invite["start"]) <= datetime.now(timezone.utc):
+            return  # встреча уже началась, отвечать поздно
+        try:
+            self.respond_invite(eid, decision["action"], decision.get("reply", ""), decision.get("propose"), by="auto")
+        except (RuntimeError, ValueError) as e:
+            self.db.record_service_error("outlook", "Автоответ на приглашение «{}»: {}".format(email["subject"], e))
+
+    def events(self, start: datetime, end: datetime) -> List[dict]:
+        return self.calendar().events(start, end)
+
+    def event(self, event_id: str) -> dict:
+        return self.calendar().get_event(event_id)
+
+    def create_event(self, spec: dict) -> str:
+        return self.calendar().create_event(spec)
+
+    def update_event(self, event_id: str, spec: dict, scope: str) -> str:
+        return self.calendar().update_event(event_id, spec, scope)
+
+    def cancel_event(self, event_id: str, scope: str, message: str) -> str:
+        return self.calendar().cancel_event(event_id, scope, message)
+
+    def free_busy(self, emails: List[str], start: datetime, days: int, duration: int) -> dict:
+        """Занятость участников и переговорных плюс окна, когда свободны все (и я сам)."""
+        me = self.me()
+        people = list(dict.fromkeys(([me] if me else []) + emails))
+        horizon = max(days, 7)  # общие окна ищем на неделю вперёд, занятость нужна на весь этот срок
+        busy = self.calendar().free_busy(people, start, start + timedelta(days=horizon))
+        s = self.db.settings()
+        blocks = {k: v.get("blocks", []) for k, v in busy.items()}
+        slots = calendar_ops.common_slots(blocks, max(start, datetime.now(timezone.utc)), timedelta(minutes=duration),
+                                          s["work_start"], s["work_end"], 6, horizon)
+        return {"people": busy, "me": me, "slots": slots, "work_start": s["work_start"], "work_end": s["work_end"]}
+
+    def rooms(self) -> List[dict]:
+        at, cached = self._rooms
+        if cached is not None and time.time() - at < ROOMS_TTL:
+            return cached
+        rooms = self.calendar().rooms()
+        self._rooms = (time.time(), rooms)
+        return rooms
+
+    # --- письмо целиком ---------------------------------------------------
+    def attachment(self, email: dict, index: int) -> tuple:
+        """(описание, байты). Скачанное держим в памяти: картинки письма запрашиваются при каждом открытии."""
+        items = email.get("attachments") or []
+        if not 0 <= index < len(items):
+            raise ValueError("Нет такого вложения")
+        meta = items[index]
+        key = (email["id"], index)
+        with self._cache_lock:
+            if key in self._att_cache:
+                self._att_cache.move_to_end(key)
+                return meta, self._att_cache[key]
+        if not email.get("item_id"):
+            raise MailError("Письмо получено старой версией сервиса, вложение можно открыть только в Outlook")
+        data = self.calendar().attachment(email["item_id"], meta["id"])
+        with self._cache_lock:
+            self._att_cache[key] = data
+            while sum(len(v) for v in self._att_cache.values()) > ATTACHMENT_CACHE_BYTES and len(self._att_cache) > 1:
+                self._att_cache.popitem(last=False)
+        return meta, data
+
+    def email_document(self, email: dict, allow_remote: bool) -> tuple:
+        """HTML для iframe и число скрытых картинок. Встроенные картинки — data: из вложений."""
+        if not email.get("body_html"):
+            return text_document(email.get("body") or ""), 0
+        inline = {}
+        for i, a in enumerate(email.get("attachments") or []):
+            if a.get("content_id") and a.get("content_type", "").startswith("image/") and "svg" not in a["content_type"] \
+                    and a.get("size", 0) <= INLINE_IMAGE_BYTES:
+                try:
+                    _, data = self.attachment(email, i)
+                except Exception:  # noqa: BLE001 — без картинки письмо всё равно показываем
+                    continue
+                inline[a["content_id"]] = "data:{};base64,{}".format(a["content_type"], base64.b64encode(data).decode())
+        return render_html(email["body_html"], inline, allow_remote)
+
+    # --- ящик ---------------------------------------------------------------
+    @property
+    def inbox_id(self) -> Optional[str]:
+        return self.db.state("inbox_folder")
+
+    def folders(self, fresh: bool = False) -> List[dict]:
+        at, cached = self._folders
+        if cached and not fresh and time.time() - at < FOLDERS_TTL:
+            return cached
+        folders = self.calendar().folders()
+        for f in folders:
+            if f["kind"] in ("inbox", "trash", "sent", "drafts", "junk") and self.db.state(f["kind"] + "_folder") != f["id"]:
+                self.db.set_state(f["kind"] + "_folder", f["id"])
+        self._folders = (time.time(), folders)
+        return folders
+
+    def hidden_folders(self) -> List[str]:
+        return [self.db.state("trash_folder") or ""]
+
+    def folder_name(self, folder_id: Optional[str]) -> str:
+        return next((f["name"] for f in self._folders[1] if f["id"] == folder_id), "")
+
+    def _sync_inbox(self) -> None:
+        """Прочитано, удалено и перемещено в Outlook — переносим к себе. Ошибка не мешает получению почты."""
+        source = self.source
+        if not hasattr(source, "sync_inbox"):
+            return
+        try:
+            with self._box_lock:
+                if not self.inbox_id:
+                    self.folders(fresh=True)
+                changes, state = source.sync_inbox(self.db.state("inbox_sync"))
+                for ch in changes:
+                    if ch["kind"] == "read":
+                        self.db.set_read_by_item(ch["item_id"], ch["is_read"])
+                    elif ch["kind"] == "gone":
+                        self.db.mark_gone_by_item(ch["item_id"])
+                    elif ch["kind"] == "create":
+                        self.db.upsert_mail(ch["mail"], self.inbox_id, self.db.state("watermark"))
+                self.db.set_state("inbox_sync", state)
+            if changes:
+                self._folders = (0.0, self._folders[1])
+        except Exception as e:  # noqa: BLE001
+            self.db.record_service_error("outlook", "Синхронизация входящих: {}: {}".format(type(e).__name__, e))
+            self.db.set_state("inbox_sync", None)  # состояние могло устареть, начнём заново
+
+    def load_folder(self, folder_id: str, older: bool = False) -> dict:
+        """Подтягивает страницу писем папки с сервера. Письма, которых на сервере больше нет, прячет."""
+        inbox = self.inbox_id
+        before = None
+        if older:
+            rows = self.db.list_emails(folder=folder_id, inbox=inbox, limit=1, offset=0, oldest_first=True)["emails"]
+            before = parse_iso(rows[0]["received_at"]) if rows else None
+        items, more = self.calendar().list_folder(folder_id, before)
+        with self._box_lock:
+            seen = set()
+            for m in items:
+                m.setdefault("folder", folder_id)
+                self.db.upsert_mail(m, inbox, self.db.state("watermark"))
+                seen.add(m.get("item_id"))
+            oldest = min(m["received_at"] for m in items) if more else ""  # без more страница покрыла всю папку
+            newest = before.isoformat() if before else None
+            known = self.db.item_ids(folder_id, inbox, newest, oldest)
+            self.db.mark_gone([eid for item_id, eid in known.items() if item_id and item_id not in seen])
+        return {"loaded": len(items), "more": more}
+
+    def _email(self, eid: int) -> dict:
+        email = self.db.get_email(eid)
+        if not email:
+            raise ValueError("Письмо не найдено")
+        if not email.get("item_id"):
+            raise ValueError("Письмо получено старой версией сервиса или удалено: откройте его в Outlook")
+        return email
+
+    def set_read(self, eid: int, read: bool) -> None:
+        email = self._email(eid)
+        self.calendar().set_read(email["item_id"], read)
+        self.db.set_read(eid, read)
+        self._folders = (0.0, self._folders[1])
+
+    def move(self, eid: int, folder_id: str) -> dict:
+        email = self._email(eid)
+        if folder_id == email.get("folder"):
+            return email
+        with self._box_lock:
+            new_id = self.calendar().move(email["item_id"], folder_id)
+            self.folders()
+            self.db.set_folder(eid, folder_id, new_id, "moved", self.folder_name(folder_id) or folder_id)
+        self._folders = (0.0, self._folders[1])
+        return self.db.get_email(eid)
+
+    def delete(self, eid: int, permanent: bool = False) -> str:
+        """В «Удалённые», а из «Удалённых» — навсегда, как в Outlook."""
+        email = self._email(eid)
+        trash = self.db.state("trash_folder")
+        with self._box_lock:
+            if permanent or (trash and email.get("folder") == trash):
+                self.calendar().delete_forever(email["item_id"])
+                self.db.forget(eid)
+                result = "deleted"
+            else:
+                folder, new_id = self.calendar().trash(email["item_id"])
+                self.db.set_folder(eid, folder, new_id, "moved", "Удалённые")
+                result = "trash"
+        self._folders = (0.0, self._folders[1])
+        return result
+
+    def search(self, query: str) -> List[int]:
+        items = self.calendar().search(query)
+        ids = []
+        with self._box_lock:
+            for m in items:
+                eid = self.db.upsert_mail(m, self.inbox_id, self.db.state("watermark"))
+                if eid:
+                    ids.append(eid)
+        return ids
+
+    def thread(self, eid: int) -> List[int]:
+        email = self.db.get_email(eid)
+        if not email:
+            raise ValueError("Письмо не найдено")
+        if not email.get("conversation_id"):
+            return [eid]
+        try:
+            items = self.calendar().thread(email["conversation_id"], email.get("conversation_topic") or "")
+            with self._box_lock:
+                for m in items:
+                    self.db.upsert_mail(m, self.inbox_id, self.db.state("watermark"))
+        except Exception as e:  # noqa: BLE001 — цепочку покажем по тому, что уже есть в базе
+            self.db.record_service_error("outlook", "Цепочка писем: {}: {}".format(type(e).__name__, e))
+        return self.db.thread_ids(email["conversation_id"], email.get("conversation_topic") or "") or [eid]
+
+    # --- написание писем ---------------------------------------------------
+    def me(self) -> str:
+        return self.db.settings()["ews_email"] or ("me@example.com" if self.fake_source else "")
+
+    def new_draft(self, kind: str, ref: Optional[int]) -> dict:
+        if kind not in compose.KINDS:
+            raise ValueError("Неизвестный вид письма: {}".format(kind))
+        email = self.db.get_email(ref) if ref else None
+        if kind != "new" and not email:
+            raise ValueError("Письмо для ответа не найдено")
+        fields = compose.prefill(kind, email, self.me())
+        if kind == "forward":
+            # исходные вложения Exchange приложит сам; показываем их, чтобы было видно, что уйдёт
+            fields["attachments"] = [{"ref": i, "name": a["name"], "size": a.get("size", 0),
+                                      "content_type": a.get("content_type", "")}
+                                     for i, a in enumerate(email.get("attachments") or []) if not a.get("inline")]
+        sig = self.db.default_signature(reply=kind != "new")
+        if sig and sig["body_html"].strip():
+            fields["body_html"] = '<p><br></p><div data-gm-sig="1">{}</div>'.format(sig["body_html"])
+        did = self.db.add_draft(kind, email["id"] if email else None, fields)
+        return self.db.get_draft(did)
+
+    def save_draft(self, did: int, data: dict) -> dict:
+        self._editable(did)
+        fields = {}
+        for key in ("to", "cc", "bcc"):
+            if key in data:
+                fields[key] = [str(x)[:500] for x in (data[key] or [])][:compose.MAX_RECIPIENTS]
+        if "subject" in data:
+            fields["subject"] = str(data["subject"] or "")[:1000]
+        if "body_html" in data:
+            fields["body_html"] = str(data["body_html"] or "")[:1024 * 1024]
+        self.db.update_draft(did, fields)
+        return self.db.get_draft(did)
+
+    def _editable(self, did: int) -> dict:
+        draft = self.db.get_draft(did)
+        if not draft:
+            raise ValueError("Черновик не найден")
+        if draft["status"] in ("sending", "sent"):
+            raise ValueError("Письмо уже отправлено" if draft["status"] == "sent" else "Письмо отправляется")
+        return draft
+
+    def add_upload(self, did: int, name: str, content_type: str, data: bytes) -> dict:
+        draft = self._editable(did)
+        name = os.path.basename(name.replace("\\", "/")).strip()[:200] or "файл"
+        total = sum(a.get("size", 0) for a in draft["attachments"]) + len(data)
+        if total > compose.MAX_UPLOAD:
+            raise ValueError("Вложения больше {} МБ: Exchange такое письмо не примет".format(compose.MAX_UPLOAD >> 20))
+        folder = os.path.join(self.uploads, str(did))
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        file_id = uuid.uuid4().hex
+        fd = os.open(os.path.join(folder, file_id), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        self.db.update_draft(did, {"attachments": draft["attachments"] + [
+            {"file": file_id, "name": name, "size": len(data), "content_type": content_type or "application/octet-stream"}]})
+        return self.db.get_draft(did)
+
+    def remove_attachment(self, did: int, index: int) -> dict:
+        draft = self._editable(did)
+        items = draft["attachments"]
+        if not 0 <= index < len(items):
+            raise ValueError("Нет такого вложения")
+        if "ref" in items[index]:
+            raise ValueError("Вложения исходного письма Exchange пересылает вместе с ним")
+        item = items.pop(index)
+        try:
+            os.remove(self._upload_path(did, item["file"]))
+        except OSError:
+            pass
+        self.db.update_draft(did, {"attachments": items})
+        return self.db.get_draft(did)
+
+    def upload_data(self, did: int, index: int) -> tuple:
+        draft = self.db.get_draft(did)
+        items = (draft or {}).get("attachments") or []
+        if not 0 <= index < len(items) or "file" not in items[index]:
+            raise ValueError("Нет такого вложения")
+        with open(self._upload_path(did, items[index]["file"]), "rb") as f:
+            return items[index], f.read()
+
+    def _upload_path(self, did: int, file_id: str) -> str:
+        if not file_id.isalnum():
+            raise ValueError("Неверное вложение")
+        return os.path.join(self.uploads, str(did), file_id)
+
+    def delete_draft(self, did: int) -> None:
+        draft = self.db.get_draft(did)
+        if draft and draft["status"] == "sending":
+            raise ValueError("Письмо отправляется")
+        self.db.delete_draft(did)
+        shutil.rmtree(os.path.join(self.uploads, str(did)), ignore_errors=True)
+
+    def send_draft(self, did: int) -> dict:
+        draft = self._editable(did)
+        to, cc, bcc = (compose.clean_people(draft[k]) for k in ("to", "cc", "bcc"))
+        if not (to or cc or bcc):
+            raise ValueError("Укажите хотя бы одного адресата")
+        email = self.db.get_email(draft["ref_email_id"]) if draft["ref_email_id"] else None
+        if draft["kind"] != "new" and not (email and email.get("item_id")):
+            raise ValueError("Исходное письмо получено старой версией сервиса: ответьте на него в Outlook")
+        files = [(a["name"], self.upload_data(did, i)[1])
+                 for i, a in enumerate(draft["attachments"]) if "file" in a]
+        cleaned = clean_fragment(draft["body_html"])
+        body = '<div style="{}">{}</div>'.format(OUTGOING_STYLE, cleaned)
+        self.db.update_draft(did, {"body_html": cleaned})  # в «Отправленных» то же, что ушло
+        if not self.db.claim_draft(did):
+            raise ValueError("Письмо уже отправляется")
+        try:
+            self.calendar().send(draft["kind"], email["item_id"] if email else None, to, cc, bcc,
+                                 draft["subject"], body, files)
+        except Exception as e:  # noqa: BLE001 — черновик остаётся, можно поправить и отправить снова
+            error = "{}: {}".format(type(e).__name__, e)[:1000]
+            self.db.finish_draft(did, False, error)
+            raise RuntimeError(error)
+        self.db.finish_draft(did, True)
+        shutil.rmtree(os.path.join(self.uploads, str(did)), ignore_errors=True)
+        with self._cache_lock:
+            self._contacts = (0.0, [])
+        return self.db.get_draft(did)
+
+    def ai_draft(self, did: int, instruction: str, current_text: str) -> dict:
+        """Черновик от модели. Только текст: в письмо он попадёт, когда пользователь сам нажмёт «Отправить»."""
+        draft = self._editable(did)
+        s = self.db.settings()
+        email = self.db.get_email(draft["ref_email_id"]) if draft["ref_email_id"] else None
+        if draft["kind"] == "new" and not instruction.strip() and not current_text.strip():
+            raise ValueError("Напишите, о чём письмо: модели не на что опереться")
+        prompt = compose.ai_prompt(draft["kind"], email, instruction, current_text, self.me(), int(s["max_body_chars"]))
+        res = self.gigacode()._json("POST", "/api/chat", {"prompt": prompt})
+        text = compose.clean_ai_text(res.get("response") or "")
+        if not text:
+            raise RuntimeError("Модель вернула пустой ответ")
+        return {"text": text, "html": compose.text_to_html(text)}
+
+    def contacts(self, q: str, limit: int = 12) -> List[dict]:
+        """Подсказка адресатов: сначала с кем чаще переписывались, потом адресная книга Exchange."""
+        q = (q or "").strip().lower()
+        if not q:
+            return []
+        people = [p for p in self.personal_contacts() + self._history_contacts()
+                  if q in p["email"].lower() or q in p["name"].lower()]
+        seen, out = set(), []
+        for p in people:  # личные контакты первыми, без повторов
+            if p["email"].lower() not in seen:
+                seen.add(p["email"].lower())
+                out.append(p)
+        out = out[:limit]
+        if len(q) >= 3 and len(out) < limit:
+            try:
+                known = {p["email"].lower() for p in out}
+                out += [p for p in self.calendar().resolve(q, limit) if p["email"].lower() not in known]
+            except Exception:  # noqa: BLE001 — без адресной книги подсказки только из истории
+                pass
+        return out[:limit]
+
+    def personal_contacts(self) -> List[dict]:
+        """Личные контакты Exchange для подсказки адресатов. Без входа или при ошибке — пусто."""
+        at, cached = self._personal
+        if time.time() - at < CONTACTS_TTL:
+            return cached
+        out = []
+        try:
+            for c in self.calendar().contacts_list():
+                out += [{"name": c["display_name"], "email": e, "source": "contacts"} for e in c["emails"]]
+        except Exception:  # noqa: BLE001
+            pass
+        self._personal = (time.time(), out)
+        return out
+
+    def forget_contacts(self) -> None:
+        self._personal = (0.0, [])
+
+    # --- флажки и уведомления -----------------------------------------------
+    def set_flag(self, eid: int, flag: int) -> dict:
+        email = self._email(eid)
+        self.calendar().set_flag(email["item_id"], flag)
+        self.db.set_flag(eid, flag)
+        return {"flag": flag}
+
+    def new_mail(self, after: int) -> dict:
+        last, inbox = self.db.last_email_id(), self.inbox_id or "inbox"
+        unread = self.db.unread_count(inbox, inbox)
+        if after <= 0:  # первая проверка после загрузки страницы: запоминаем, о старом не уведомляем
+            return {"last": last, "emails": [], "unread": unread}
+        return {"last": last, "emails": self.db.new_mail_since(after, self.inbox_id), "unread": unread}
+
+    def task_from_email(self, eid: int) -> str:
+        email = self.db.get_email(eid)
+        if not email:
+            raise ValueError("Письмо не найдено")
+        note = "Из письма от {} <{}>, {}\n\n{}".format(email.get("sender_name") or "", email.get("sender") or "",
+                                                       (email.get("received_at") or "")[:16].replace("T", " "),
+                                                       (email.get("body") or "")[:3000])
+        from .office import clean_task
+        return self.calendar().task_save(None, clean_task({"subject": email.get("subject") or "(без темы)",
+                                                           "body": note}))
+
+    def _history_contacts(self) -> List[dict]:
+        with self._cache_lock:
+            at, cached = self._contacts
+            if time.time() - at < CONTACTS_TTL:
+                return cached
+        stats: dict = {}
+        me = self.me().lower()
+
+        def add(text: str, weight: int, when: str) -> None:
+            name, addr = compose.parse_person(text)
+            if not compose.EMAIL_RE.match(addr) or addr.lower() == me:
+                return
+            p = stats.setdefault(addr.lower(), {"name": "", "email": addr, "count": 0, "last": "", "source": "history"})
+            p["name"] = p["name"] or name
+            p["count"] += weight
+            p["last"] = max(p["last"], when or "")
+
+        for row in self.db.contact_rows():
+            if "sender" in row:
+                add("{} <{}>".format(row["sender_name"], row["sender"]) if row["sender_name"] else row["sender"], 1,
+                    row["received_at"])
+                for p in compose.split_people(row["recipients"]) + compose.split_people(row["cc"]):
+                    add(p, 1, row["received_at"])
+            else:
+                for key in ("to_list", "cc_list", "bcc_list"):
+                    for p in json_list(row[key]):
+                        add(p, 3, row["sent_at"])  # кому писали сами — важнее
+        people = sorted(stats.values(), key=lambda p: (p["count"], p["last"]), reverse=True)
+        with self._cache_lock:
+            self._contacts = (time.time(), people)
+        return people
 
     # --- статус -----------------------------------------------------------
     def check_gigacode(self) -> dict:
@@ -226,3 +764,12 @@ class Worker:
             self.db.finish_run(rid, email_id, "done", "".join(parts).strip())
         except (RuntimeError, OSError, ValueError) as e:
             self.db.finish_run(rid, email_id, "error", error=str(e)[:4000])
+
+
+def json_list(value) -> list:
+    import json
+    try:
+        out = json.loads(value or "[]")
+    except ValueError:
+        return []
+    return out if isinstance(out, list) else []

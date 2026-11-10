@@ -5,11 +5,16 @@ import json
 import re
 from typing import List, Optional, Sequence
 
+from .meetings import describe, parse_decision, prompt_block
+
 JIRA_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,15}-\d{1,7}\b")
 FALLBACK_CATEGORY = "UNKNOWN"
 BUILTIN_VARIABLES = (("jira_key", "Jira-ключ"), ("subject", "тема письма"), ("sender", "адрес отправителя"),
                      ("summary", "саммари"), ("action_hint", "совет модели"), ("body", "текст письма"),
-                     ("files", "файлы из окружения"))
+                     ("files", "файлы из окружения"), ("start", "начало встречи"), ("end", "конец встречи"),
+                     ("organizer", "организатор встречи"), ("location", "место встречи"),
+                     ("conflicts", "пересечения в календаре"), ("free_slots", "свободные окна"),
+                     ("when", "время встречи одной строкой"))
 MAX_ENTITY_CHARS = 500
 
 
@@ -18,7 +23,7 @@ class ClassifyError(RuntimeError):
 
 
 def build_prompt(email: dict, categories: List[dict], base_prompt: str, max_body_chars: int,
-                 entities: Sequence[dict] = ()) -> str:
+                 entities: Sequence[dict] = (), invite_prompt: str = "") -> str:
     cats = "\n\n".join("### {} ({})\n{}".format(c["name"], c["title"], c["prompt"].strip()) for c in categories)
     body = email.get("body", "")
     if len(body) > max_body_chars:
@@ -28,6 +33,9 @@ def build_prompt(email: dict, categories: List[dict], base_prompt: str, max_body
         wanted = "Извлеки из письма значения. Если значения нет, поставь null:\n{}\n\n".format(
             "\n".join("- {} ({}): {}".format(e["name"], e.get("title") or e["name"], e.get("prompt") or "") for e in entities))
         extra_json = ', "entities": {{{}}}'.format(", ".join('"{}": <значение или null>'.format(e["name"]) for e in entities))
+    invite_text, invite_json = prompt_block(email.get("invite"), categories, invite_prompt)
+    wanted += invite_text
+    extra_json += invite_json
     return (
         "{base}\n\nКатегории:\n{cats}\n\n{wanted}"
         "Ответь строго JSON без пояснений и без markdown:\n"
@@ -101,6 +109,7 @@ def parse_response(text: str, email: dict, categories: List[dict], entities: Seq
         "jira_key": jira, "recommend_action": data.get("recommend_action") is True,
         "action_hint": str(data.get("action_hint") or "").strip(),
         "entities": _extract_entities(data, email, entities),
+        "invite": parse_decision(data, email.get("invite")),
     }
 
 
@@ -117,6 +126,7 @@ def variables(email: dict, files: Optional[str] = None, entities: Sequence[dict]
         "action_hint": email.get("action_hint") or "", "body": email.get("body") or "",
         "files": "\n".join("- " + p for p in lines(files)),
     })
+    values.update(describe(email.get("invite")))
     return values
 
 
