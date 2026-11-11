@@ -102,7 +102,7 @@ class ExchangeSource(ExchangeOffice):
         from exchangelib import EWSDateTime
         from exchangelib.items import MeetingCancellation, MeetingRequest, Message
 
-        query = (self.account.inbox.filter(datetime_received__gte=EWSDateTime.from_datetime(since))
+        query = (self.account.inbox.filter(datetime_received__gte=_ews_utc(since))
                  .only(*self.FIELDS).order_by("datetime_received"))
         out = []
         for item in query[:limit]:
@@ -170,7 +170,7 @@ class ExchangeSource(ExchangeOffice):
 
         qs = self._folder(folder_id).all()
         if before:
-            qs = qs.filter(datetime_received__lt=EWSDateTime.from_datetime(before))
+            qs = qs.filter(datetime_received__lt=_ews_utc(before))
         items = list(qs.only(*self.FIELDS).order_by("-datetime_received")[:limit + 1])
         return self._dicts(items[:limit]), len(items) > limit
 
@@ -281,7 +281,7 @@ class ExchangeSource(ExchangeOffice):
     def events(self, start: datetime, end: datetime) -> List[dict]:
         from exchangelib import EWSDateTime
 
-        view = self.account.calendar.view(start=EWSDateTime.from_datetime(start), end=EWSDateTime.from_datetime(end))
+        view = self.account.calendar.view(start=_ews_utc(start), end=_ews_utc(end))
         return sorted((self._event_dict(e) for e in view.only(*self.EVENT_FIELDS)), key=lambda e: e["start"])
 
     @staticmethod
@@ -379,8 +379,8 @@ class ExchangeSource(ExchangeOffice):
             if proposed:
                 try:
                     cls(account=self.account, reference_item_id=ref,
-                        proposed_start=EWSDateTime.from_datetime(parse_iso(proposed["start"])),
-                        proposed_end=EWSDateTime.from_datetime(parse_iso(proposed["end"])), **kwargs).send()
+                        proposed_start=_ews_utc(parse_iso(proposed["start"])),
+                        proposed_end=_ews_utc(parse_iso(proposed["end"])), **kwargs).send()
                     return {"proposed": True}
                 except Exception:  # noqa: BLE001 — Exchange до 2013 не умеет предлагать время, отвечаем без этого
                     pass
@@ -1100,6 +1100,12 @@ class FakeSource(FakeOffice):
         q = query.lower()
         return [{"name": n, "email": e, "source": "directory"} for n, e in self.DIRECTORY
                 if q in n.lower() or q in e.lower()][:limit]
+
+
+def _ews_utc(value: datetime):
+    """EWSDateTime в UTC. Местный пояс Python отдаёт как сокращение (MSK), которого exchangelib не знает."""
+    from exchangelib import EWSDateTime, UTC
+    return EWSDateTime.from_datetime(value.astimezone(timezone.utc)).astimezone(UTC)
 
 
 def fetch_since(watermark: Optional[str], initial_days: int) -> datetime:
