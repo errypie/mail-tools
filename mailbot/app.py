@@ -708,7 +708,7 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(502, "Календарь недоступен: {}: {}".format(type(e).__name__, e))
         s = self.ctx.db.settings()
         self._json(200, {"events": events, "start": first.isoformat(), "days": days,
-                         "work_start": s["work_start"], "work_end": s["work_end"]})
+                         "work_start": s["work_start"], "work_end": s["work_end"], "colors": self._colors()})
 
     def _cal(self, fn, what: str):
         try:
@@ -740,7 +740,22 @@ class Handler(BaseHTTPRequestHandler):
     def get_event(self):
         if not self.query.get("id"):
             raise HttpError(400, "Нужен id встречи")
-        self._json(200, self._cal(lambda: self.ctx.worker.event(self.query["id"]), "Встреча недоступна"))
+        remote = self.query.get("remote") == "1"
+        self._json(200, self._cal(lambda: self.ctx.worker.event(self.query["id"], remote), "Встреча недоступна"))
+
+    @route("GET", "/api/calendar/colors")
+    def get_colors(self):
+        self._json(200, {"rules": self._colors()})
+
+    @route("PUT", "/api/calendar/colors")
+    def put_colors(self):
+        rules = self._cal(lambda: calendar_ops.clean_colors(self._body().get("rules")), "Цвета встреч")
+        self.ctx.db.set_settings({"meeting_colors": rules})
+        self._json(200, {"rules": rules})
+
+    def _colors(self) -> list:
+        rules = self.ctx.db.settings().get("meeting_colors")
+        return calendar_ops.DEFAULT_COLORS if rules is None else rules
 
     @route("POST", "/api/calendar/event/update")
     def update_event(self):

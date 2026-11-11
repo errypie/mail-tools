@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Iterator, List, Optional, Sequence
 
-from .meetings import DEFAULT_INVITE_PROMPT
+from .meetings import DEFAULT_INVITE_PROMPT, MEETING_CATEGORY
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS emails (
@@ -171,6 +172,37 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+_PREFIX_KINDS = [
+    ("accept", ("accepted", "принято", "принят")),
+    ("decline", ("declined", "отклонено", "отклонен", "отклонён")),
+    ("tentative", ("tentative", "tentatively accepted", "под вопросом", "предварительно", "предварительно принято")),
+    ("cancel", ("canceled", "cancelled", "отменено", "отменена", "отмена")),
+    ("propose", ("new time proposed", "предложено новое время", "новое время предложено")),
+    ("invite", ("приглашение", "invitation", "updated", "обновлено", "обновлена")),
+    ("reply", ("re", "fw", "fwd", "ответ", "пересл", "отв")),
+]
+_PREFIX_RE = re.compile(r"^\s*(" + "|".join(re.escape(w) for _, ws in _PREFIX_KINDS for w in sorted(ws, key=len, reverse=True))
+                        + r")\s*:\s*", re.I)
+
+
+def meeting_topic(subject: str) -> str:
+    """Тема без «RE:», «Принято:», «Приглашение:» и подобных приставок."""
+    text = (subject or "").strip()
+    while True:
+        m = _PREFIX_RE.match(text)
+        if not m:
+            return text.strip()
+        text = text[m.end():]
+
+
+def meeting_kind(subject: str) -> str:
+    m = _PREFIX_RE.match(subject or "")
+    if not m:
+        return ""
+    word = m.group(1).lower()
+    return next(k for k, ws in _PREFIX_KINDS if word in ws)
+
+
 class Database:
     def __init__(self, path: str):
         self.path = path
@@ -241,6 +273,49 @@ class Database:
             c.executemany("INSERT INTO settings(key, value) VALUES(?, ?) "
                           "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                           [(k, json.dumps(v, ensure_ascii=False)) for k, v in values.items()])
+
+    def invite_categories(self, limit: int = 3000) -> tuple:
+        """Категории писем-приглашений: по id встречи в календаре и по теме. Свежие письма важнее."""
+        by_id, by_topic = {}, {}
+        with self.conn() as c:
+            rows = c.execute("SELECT subject, category, invite FROM emails WHERE invite IS NOT NULL AND category IS NOT NULL "
+                             "AND status='classified' ORDER BY received_at ASC LIMIT ?", (limit,)).fetchall()
+        for r in rows:
+            try:
+                cal_id = (json.loads(r["invite"]) or {}).get("calendar_id")
+            except ValueError:
+                cal_id = None
+            if cal_id:
+                by_id[cal_id] = r["category"]
+            topic = meeting_topic(r["subject"]).lower()
+            if topic:
+                by_topic[topic] = r["category"]
+        return by_id, by_topic
+
+    def meeting_mail(self, conversation_id: Optional[str], subject: str, limit: int = 30) -> List[dict]:
+        """Письма по встрече: приглашение, ответы участников, переписка. По цепочке Exchange или по теме."""
+        topic = meeting_topic(subject)
+        if not topic and not conversation_id:
+            return []
+        like = "%" + topic.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT id, subject, sender, sender_name, received_at, substr(body, 1, 400) body, invite, is_read, "
+                "conversation_id FROM emails WHERE (conversation_id = ? AND ? <> '') OR conversation_topic = ? "
+                "OR subject LIKE ? ESCAPE '\\' ORDER BY received_at DESC LIMIT 200",
+                (conversation_id or "", conversation_id or "", topic, like)).fetchall()
+        out = []
+        for r in rows:
+            same_conv = conversation_id and r["conversation_id"] == conversation_id
+            if not same_conv and meeting_topic(r["subject"]).lower() != topic.lower():
+                continue
+            kind = meeting_kind(r["subject"]) or ("invite" if r["invite"] else "mail")
+            out.append({"id": r["id"], "subject": r["subject"], "sender": r["sender"], "sender_name": r["sender_name"],
+                        "received_at": r["received_at"], "snippet": " ".join((r["body"] or "").split())[:200],
+                        "is_read": bool(r["is_read"]), "kind": kind})
+            if len(out) >= limit:
+                break
+        return out
 
     def state(self, key: str, default=None):
         with self.conn() as c:
@@ -337,7 +412,10 @@ class Database:
             where.append("is_read = 0")
         if flagged:
             where.append("flag = 2")
-        if category:
+        if category == MEETING_CATEGORY:  # «Встречи» — все приглашения, у них своя тематическая категория
+            where.append("(category = ? OR invite IS NOT NULL)")
+            args.append(category)
+        elif category:
             where.append("category = ?")
             args.append(category)
         if status:
@@ -376,6 +454,10 @@ class Database:
             by_cat = {r["category"] or "": r["n"] for r in c.execute(
                 "SELECT category, COUNT(*) n FROM emails WHERE status='classified' AND " + not_gone +
                 " GROUP BY category", gone)}
+            extra = c.execute("SELECT COUNT(*) n FROM emails WHERE status='classified' AND invite IS NOT NULL AND "
+                              "COALESCE(category, '') <> ? AND " + not_gone, [MEETING_CATEGORY] + gone).fetchone()["n"]
+            if extra:
+                by_cat[MEETING_CATEGORY] = by_cat.get(MEETING_CATEGORY, 0) + extra
             by_status = {r["status"]: r["n"] for r in c.execute("SELECT status, COUNT(*) n FROM emails GROUP BY status")}
         return {"categories": by_cat, "statuses": by_status}
 

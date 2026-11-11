@@ -581,3 +581,57 @@ addSettingsCard("rules", "Правила", async (card) => {
   };
   draw(); edit(null);
 });
+
+// ---------- цвета встреч ----------
+addSettingsCard("colors", "Цвета встреч", async (card) => {
+  card.textContent = "";
+  card.appendChild(el("h3", "", "Цвета встреч в календаре"));
+  card.appendChild(el("div", "hint", "Цвет выбирается так: сначала по категории, которую получило письмо-приглашение (её ставит модель или вы вручную), потом по категории Outlook с тем же названием, что у правила, потом по словам в теме, месте или у организатора. Остальные встречи — обычного зелёного цвета."));
+  let rules = [], categories = [];
+  try {
+    const [r, c] = await Promise.all([api("GET", "/api/calendar/colors"), api("GET", "/api/categories")]);
+    rules = r.rules; categories = c.categories;
+  } catch (e) { card.appendChild(el("div", "err", e.message)); return; }
+  const list = el("div", "clrList"), err = el("div", "err"), acts = el("div", "actions");
+  const add = el("button", "btn", "Добавить цвет"), save = el("button", "btn primary", "Сохранить");
+  const PALETTE = ["#2563eb", "#7c3aed", "#dc2626", "#ea580c", "#ca8a04", "#0d9488", "#db2777", "#475569"];
+  const row = (r, i) => {
+    const d = el("div", "clrRow"), c = el("input"), n = el("input"), w = el("input"), x = el("button", "iconBtn"), k = el("select");
+    [["", "Любая категория"], ...categories.map((y) => [y.name, y.title])].forEach(([v, t]) => { const o = el("option", "", t); o.value = v; k.appendChild(o); });
+    if (r.category && !categories.some((y) => y.name === r.category)) { const o = el("option", "", r.category + " (удалена)"); o.value = r.category; k.appendChild(o); }
+    k.value = r.category || ""; k.setAttribute("aria-label", "Категория письма для правила " + (i + 1));
+    c.type = "color"; c.value = r.color; c.title = "Цвет"; c.setAttribute("aria-label", "Цвет правила " + (i + 1));
+    n.value = r.name; n.placeholder = "Название или категория Outlook"; n.setAttribute("aria-label", "Название правила " + (i + 1));
+    w.value = (r.words || []).join(", "); w.placeholder = "Слова через запятую"; w.setAttribute("aria-label", "Слова правила " + (i + 1));
+    x.innerHTML = ICON.close; x.title = "Убрать"; x.onclick = () => { collect(); rules.splice(i, 1); draw(); };
+    d.append(c, n, k, w, x);
+    return d;
+  };
+  const collect = () => {
+    rules = [...list.querySelectorAll(".clrRow")].map((d) => {
+      const [c, n, w] = d.querySelectorAll("input");
+      return { color: c.value, name: n.value.trim(), category: d.querySelector("select").value, words: w.value.split(",").map((s) => s.trim()).filter(Boolean) };
+    });
+  };
+  const draw = () => { list.textContent = ""; rules.forEach((r, i) => list.appendChild(row(r, i))); };
+  add.onclick = () => { collect(); rules.push({ name: "", color: PALETTE[rules.length % PALETTE.length], words: [] }); draw(); list.lastChild.querySelectorAll("input")[1].focus(); };
+  save.onclick = async () => {
+    collect(); err.textContent = "";
+    try {
+      rules = (await api("PUT", "/api/calendar/colors", { rules })).rules;
+      if (typeof cal !== "undefined") { cal.colors = rules; renderLegend(); if (!$("calView").hidden) renderCal(); }
+      draw(); toast("Цвета сохранены");
+    } catch (e) { err.textContent = e.message; }
+  };
+  acts.append(add, save);
+  card.append(list, el("div", "hint", "Например: категория «Авто» — синий; «ПСИ» (категория ПСИ или слово ПСИ) — фиолетовый; слово «отдел» — красный. Если подходят несколько правил, сработает верхнее."), err, acts);
+  draw();
+});
+(function () {
+  const st = document.createElement("style");
+  st.textContent = ".clrList{display:grid;gap:8px;margin:10px 0}.clrRow{display:grid;grid-template-columns:44px minmax(110px,1fr) minmax(150px,1.2fr) minmax(120px,1.4fr) auto;gap:8px;align-items:center}"
+    + ".clrRow input[type=color]{width:44px;height:34px;padding:2px;border-radius:8px}@media (max-width:640px){.clrRow{grid-template-columns:44px 1fr auto}.clrRow select,.clrRow input:nth-child(4){grid-column:1/-1}}";
+  document.head.appendChild(st);
+  const b = $("calColorsBtn");
+  if (b) b.onclick = () => openSettings().then(() => showSetSection("colors")).catch((e) => alert(e.message));
+})();

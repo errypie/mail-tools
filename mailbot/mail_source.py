@@ -276,7 +276,7 @@ class ExchangeSource(ExchangeOffice):
 
     EVENT_FIELDS = ("subject", "start", "end", "is_all_day", "location", "organizer", "my_response_type",
                     "legacy_free_busy_status", "is_cancelled", "is_meeting", "type", "reminder_is_set",
-                    "reminder_minutes_before_start")
+                    "reminder_minutes_before_start", "categories")
 
     def events(self, start: datetime, end: datetime) -> List[dict]:
         from exchangelib import EWSDateTime
@@ -295,7 +295,8 @@ class ExchangeSource(ExchangeOffice):
                 "my_response": e.my_response_type or "", "free_busy": e.legacy_free_busy_status or "",
                 "cancelled": bool(e.is_cancelled), "is_meeting": bool(e.is_meeting), "type": kind,
                 "recurring": kind in ("Occurrence", "Exception", "RecurringMaster"),
-                "reminder": e.reminder_minutes_before_start if e.reminder_is_set else None}
+                "reminder": e.reminder_minutes_before_start if e.reminder_is_set else None,
+                "categories": list(e.categories or [])}
 
     def get_event(self, event_id: str) -> dict:
         """Встреча целиком: участники с ответами, переговорные, текст и правило повтора серии."""
@@ -305,6 +306,8 @@ class ExchangeSource(ExchangeOffice):
         out = self._event_dict(item)
         people = lambda xs: [{"email": _address(a.mailbox) or (a.mailbox.email_address or ""),  # noqa: E731
                               "name": a.mailbox.name or "", "response": a.response_type or ""} for a in xs or []]
+        conv = getattr(item, "conversation_id", None)
+        out.update(body_html=_html_body(item), inline=_inline_images(item), conversation_id=conv.id if conv else None)
         out.update(body=item.text_body or html_to_text(str(item.body or "")), required=people(item.required_attendees),
                    optional=people(item.optional_attendees), rooms=people(item.resources), recurrence=None)
         master = item
@@ -689,7 +692,18 @@ class FakeSource(FakeOffice):
         ("events@example.com", "Приглашение: Митап «ИИ в разработке»",
          "Для информации: открытый митап, участие по желанию.", (2, "18:00", "19:00", "Онлайн")),
         ("colleague@example.com", "Перенос встречи", "Встреча по проекту переносится на четверг.", None),
+        ("tester@example.com", "RE: Приглашение: ПСИ системы «Демо-Портал»",
+         "Стенд будет готов к 13:30, тестовые учётные записи пришлю отдельно.", None),
     ]
+    PSI_BANNER = (
+        '<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-family:Segoe UI,Arial">'
+        '<tr><td style="background:#5b2bb5;color:#fff;padding:18px 20px;font-size:20px;font-weight:600">'
+        'ПСИ «Демо-Портал» · релиз 2.4</td></tr>'
+        '<tr><td style="background:#efe9fb;padding:10px 20px;color:#3b1d78">Приёмо-сдаточные испытания, стенд PREPROD</td></tr>'
+        '</table><p>Коллеги, приглашаем на ПСИ.</p><h3 style="margin:14px 0 6px">Повестка</h3>'
+        '<ol><li>Демонстрация сценариев</li><li>Замечания и протокол</li><li>Решение о выпуске</li></ol>'
+        '<p><a href="https://teams.example.com/join/psi">Подключиться к собранию</a></p>'
+        '<script>alert(1)</script>')
 
     def __init__(self):
         self.sent = 0
@@ -733,7 +747,7 @@ class FakeSource(FakeOffice):
                 "free_busy": "Tentative" if response in ("NoResponseReceived", "Tentative") else "Busy",
                 "cancelled": False, "is_meeting": response != "Organizer" or bool(location), "reminder": 15,
                 "body": "", "required": [] if response == "Organizer" else [self._person("me@example.com", response)],
-                "optional": [], "rooms": [], "recurrence": None, "exceptions": {}, "deleted": []}
+                "optional": [], "rooms": [], "recurrence": None, "exceptions": {}, "deleted": [], "categories": []}
 
     def _person(self, email: str, response: str = "Unknown") -> dict:
         name = next((n for n, e in self.DIRECTORY + self.ROOM_NAMES if e == email), email.split("@")[0])
@@ -748,8 +762,10 @@ class FakeSource(FakeOffice):
              "sender_name": sender.split("@")[0], "recipients": "Я <me@example.com>",
              "received_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "body": body,
              "has_attachments": False, "item_id": "item-{}".format(self.sent)}
-        m.update(folder="f-inbox", is_read=False, conversation_id="conv-{}".format(self.sent),
-                 conversation_topic=subject)
+        topic = re.sub(r"^(RE|FW): ", "", subject)
+        conv = next((x["conversation_id"] for x in self.box.values() if x.get("conversation_topic") == topic), None)
+        m.update(folder="f-inbox", is_read=False, conversation_id=conv or "conv-{}".format(self.sent),
+                 conversation_topic=topic)
         if self.sent == 1:
             self._release_extras(m)
             m.update(conversation_id="conv-release", conversation_topic="ABC-123")
@@ -757,6 +773,12 @@ class FakeSource(FakeOffice):
             workday, start, end, location = meeting
             ev = self._event("cal-inv-{}".format(self.sent), subject.split(": ", 1)[-1], workday, start, end,
                              "NoResponseReceived", sender, location)
+            ev["conversation_id"] = m["conversation_id"]
+            if "ПСИ" in subject:  # приглашение как из Outlook: баннер, повестка, много участников
+                ev["body_html"] = self.PSI_BANNER
+                ev["required"] = [self._person("me@example.com", "NoResponseReceived")] + [
+                    self._person("tester{}@example.com".format(i), ("Accept", "Decline", "Tentative", "Unknown")[i % 4])
+                    for i in range(1, 25)]
             self.calendar.append(ev)  # Exchange сам кладёт приглашение в календарь как предварительное
             m["invite"] = {"kind": "request", "item_id": "inv-{}".format(self.sent), "start": ev["start"],
                            "end": ev["end"], "all_day": False, "location": location, "organizer": sender,
@@ -788,7 +810,7 @@ class FakeSource(FakeOffice):
             raise MailError("Вложение не найдено")
 
     # --- календарь -------------------------------------------------------
-    PRIVATE = ("body", "required", "optional", "rooms", "recurrence", "exceptions", "deleted")
+    PRIVATE = ("body", "body_html", "conversation_id", "required", "optional", "rooms", "recurrence", "exceptions", "deleted")
     ROOM_LISTS = [("rooms-msk@example.com", "Москва, офис на Лесной",
                    [("Переговорная 1 · 4 места", "room-1@example.com"), ("Переговорная 2 · 8 мест", "room-2@example.com"),
                     ("Большая переговорная · 20 мест", "room-big@example.com"), ("Фокус-румка · 2 места", "room-focus@example.com")]),
@@ -843,7 +865,8 @@ class FakeSource(FakeOffice):
         ev, idx = self._find(event_id)
         out = self._public(ev) if idx is None else self._occurrence(ev, idx)
         details = dict(ev, **(ev["exceptions"].get(idx, {}) if idx else {}))
-        out.update({k: details[k] for k in ("body", "required", "optional", "rooms")}, recurrence=ev.get("recurrence"))
+        out.update({k: details[k] for k in ("body", "required", "optional", "rooms")}, recurrence=ev.get("recurrence"),
+                   body_html=details.get("body_html") or "", inline={}, conversation_id=ev.get("conversation_id"))
         if idx is not None:
             out.update(series_id=ev["id"], series_start=ev["start"], series_end=ev["end"])
         return out
@@ -1100,6 +1123,34 @@ class FakeSource(FakeOffice):
         q = query.lower()
         return [{"name": n, "email": e, "source": "directory"} for n, e in self.DIRECTORY
                 if q in n.lower() or q in e.lower()][:limit]
+
+
+INLINE_EVENT_IMAGE_BYTES = 3 * 1024 * 1024
+
+
+def _html_body(item) -> str:
+    from exchangelib import HTMLBody
+    return str(item.body) if isinstance(item.body, HTMLBody) else ""
+
+
+def _inline_images(item) -> dict:
+    """Картинки из описания встречи (баннеры Outlook) как data: — по content_id."""
+    import base64
+    from exchangelib.attachments import FileAttachment
+
+    if not isinstance(item.body, str) or "cid:" not in str(item.body):
+        return {}
+    out = {}
+    for a in item.attachments or []:
+        ctype = (getattr(a, "content_type", "") or "").lower()
+        if not isinstance(a, FileAttachment) or not a.content_id or not ctype.startswith("image/") or "svg" in ctype \
+                or (a.size or 0) > INLINE_EVENT_IMAGE_BYTES:
+            continue
+        try:
+            out[a.content_id] = "data:{};base64,{}".format(ctype, base64.b64encode(a.content).decode())
+        except Exception:  # noqa: BLE001 — без картинки описание всё равно покажем
+            continue
+    return out
 
 
 def _ews_utc(value: datetime):

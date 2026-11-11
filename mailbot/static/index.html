@@ -345,7 +345,7 @@ nav button.add { color: var(--accent); }
 .slot.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 .replyText { white-space: pre-wrap; font-size: 14px; background: var(--code); border-radius: 8px; padding: 8px 10px; margin-top: 8px; overflow-wrap: anywhere; }
 .inviteForm .suggest { margin-top: 10px; }
-.calView { flex: 1; min-width: 0; display: flex; position: relative; background: var(--panel); }
+.calView { flex: 1; min-width: 0; min-height: 0; display: flex; position: relative; background: var(--panel); }
 .calSide { width: 250px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 14px 12px; overflow-y: auto; background: var(--side); }
 .calSide > .btn { width: 100%; padding: 10px; display: flex; align-items: center; justify-content: center; gap: 8px; }
 .mini { margin-top: 16px; user-select: none; }
@@ -361,7 +361,7 @@ nav button.add { color: var(--accent); }
 .legend { margin-top: 18px; font-size: 12.5px; color: var(--muted); display: grid; gap: 7px; }
 .legend div { display: flex; align-items: center; gap: 8px; }
 .legend i { width: 22px; height: 12px; border-radius: 3px; flex-shrink: 0; }
-.calMain { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.calMain { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .calBar { display: flex; align-items: center; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .calBar h2 { font-size: 18px; font-weight: 600; margin: 0 8px; flex: 1; min-width: 180px; text-transform: none; }
 .seg { display: inline-flex; background: var(--bg); border-radius: 10px; padding: 3px; }
@@ -490,6 +490,29 @@ nav button.add { color: var(--accent); }
 .slot:hover { border-color: var(--accent); color: var(--accent); }
 .people { display: grid; gap: 3px; }
 .people .rs { color: var(--muted); font-size: 13px; }
+.people .pp { display: flex; gap: 6px; align-items: baseline; }
+.people .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--muted); transform: translateY(-1px); }
+.people .dot.Accept, .people .dot.Organizer { background: #21a038; } .people .dot.Decline { background: var(--danger); }
+.people .dot.Tentative { background: #e0a100; }
+.respSum { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.respSum b { color: var(--text); font-weight: 600; }
+.people .more { justify-self: start; margin-top: 2px; }
+.evDoc { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.evDoc iframe { width: 100%; border: 0; min-height: 120px; background: #fff; border-radius: 6px; display: block; }
+.evDoc .imgBar { font-size: 12.5px; color: var(--muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.evDisc { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
+.evDisc h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.dItem { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 8px; padding: 7px 8px; border-radius: 8px; cursor: pointer; font-size: 13.5px; }
+.dItem:hover, .dItem:focus-visible { background: var(--soft); }
+.dItem .k { grid-row: span 2; font-size: 12px; padding: 1px 7px; border-radius: 10px; align-self: start; background: var(--code); color: var(--muted); white-space: nowrap; }
+.dItem .k.accept { background: #dff3e5; color: #10391b; } .dItem .k.decline { background: #fde2e1; color: #7a1712; }
+.dItem .k.tentative { background: #fff1c7; color: #5c4300; } .dItem .k.cancel { background: #fde2e1; color: #7a1712; }
+.dItem .w { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .dItem.unread .w::before { content: "● "; color: var(--accent); }
+.dItem .t { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.dItem .s { grid-column: 2 / 4; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.legend .clr i { border-left: 3px solid; }
+.catDot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.legend .linkBtn { justify-self: start; font-size: 12.5px; }
 .epText { white-space: pre-wrap; font-size: 14px; padding: 10px 0 0; margin-top: 12px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
 .remBox { position: fixed; right: 18px; bottom: 18px; z-index: 65; display: grid; gap: 10px; width: min(340px, calc(100vw - 32px)); }
 .remBox:empty { display: none; }
@@ -688,6 +711,8 @@ nav button.on .n.u { background: none; color: var(--accent); }
         <div><i class="busy"></i>Занято, принято</div>
         <div><i class="tent"></i>Под вопросом</div>
         <div><i class="pending"></i>Нет ответа</div>
+        <div id="calColors" style="display:grid;gap:7px"></div>
+        <button class="linkBtn" id="calColorsBtn">Настроить цвета встреч</button>
       </div>
       <button class="linkBtn notifyBtn" id="notifyBtn" hidden>Включить уведомления о встречах</button>
       <div class="hint calTip">Встречи можно перетаскивать мышью, а длительность — менять за нижний край.</div>
@@ -1320,6 +1345,7 @@ function renderList(data, cats) {
     main.appendChild(el("div", "sum", m.summary || m.preview || ""));
     const tags = el("div", "tags");
     if (cross && m.folder && m.folder !== mb.inbox && folderName(m.folder)) tags.appendChild(el("span", "tag fld", folderName(m.folder)));
+    if (m.invite && m.category !== "MEETING") tags.appendChild(el("span", "tag cat", cats.MEETING || "Встречи"));
     if (m.category) tags.appendChild(el("span", "tag cat", cats[m.category] || m.category));
     if (STATUS_TEXT[m.status]) tags.appendChild(el("span", "tag" + (m.status === "failed" ? " bad" : ""), STATUS_TEXT[m.status]));
     if (m.jira_key) tags.appendChild(el("span", "tag", m.jira_key));
@@ -1664,6 +1690,11 @@ function renderDetail(m) {
   };
   const tags = el("div", "tags");
   tags.style.marginTop = "0";
+  if (m.invite && m.category && m.category !== "MEETING") {
+    const mt = m.categories.find((c) => c.name === "MEETING");
+    const t = el("span", "tag cat", mt ? mt.title : "Встречи"); t.title = "Приглашение видно во «Встречах» и в своей категории";
+    tags.appendChild(t);
+  }
   tags.appendChild(pick);
   if (m.category_manual) tags.appendChild(el("span", "tag", "выбрано вручную"));
   else if (m.confidence != null) tags.appendChild(el("span", "tag", "уверенность " + Math.round(m.confidence * 100) + "%"));
@@ -2480,6 +2511,38 @@ function calTitle(start, days) {
   if (start.getMonth() === end.getMonth()) return start.getDate() + "–" + end.getDate() + " " + MONTHS_OF[end.getMonth()] + " " + end.getFullYear();
   return start.getDate() + " " + MONTHS_OF[start.getMonth()] + " – " + end.getDate() + " " + MONTHS_OF[end.getMonth()] + " " + end.getFullYear();
 }
+// цвет встречи по правилам: имя правила = категория Outlook, или слово в теме, месте, у организатора
+function evRule(e) {
+  const rules = cal.colors || [];
+  if (!rules.length) return null;
+  const outlook = (e.categories || []).map((c) => c.toLowerCase());
+  const hay = [e.subject, e.location, e.organizer, e.organizer_name].join(" ").toLowerCase();
+  // сначала категория письма-приглашения, потом категория Outlook, потом слова
+  return (e.mail_category && rules.find((r) => r.category && r.category === e.mail_category))
+    || rules.find((r) => outlook.includes(r.name.toLowerCase()))
+    || rules.find((r) => (r.words || []).some((w) => w && hay.includes(w.toLowerCase()))) || null;
+}
+function paintEv(node, e) {
+  const r = evRule(e);
+  if (!r || e.cancelled) return node;
+  const c = r.color;
+  node.style.setProperty("--ev-bar", c);
+  node.style.setProperty("--ev-bg", "color-mix(in srgb, " + c + " 18%, var(--panel))");
+  node.style.setProperty("--ev-text", "color-mix(in srgb, " + c + " 55%, var(--text))");
+  node.style.setProperty("--ev-stripe", "color-mix(in srgb, " + c + " 22%, transparent)");
+  node.title = (node.title ? node.title + "\n" : "") + "Цвет: " + r.name;
+  return node;
+}
+function renderLegend() {
+  const box = $("calColors");
+  if (!box) return;
+  box.textContent = "";
+  (cal.colors || []).forEach((r) => {
+    const d = el("div", "clr"), i = el("i");
+    i.style.background = "color-mix(in srgb, " + r.color + " 18%, var(--panel))"; i.style.borderLeftColor = r.color;
+    d.append(i, r.name); box.appendChild(d);
+  });
+}
 function evClass(e) {
   if (e.cancelled) return "cancel";
   if (e.my_response === "Tentative" || e.free_busy === "Tentative" && e.my_response !== "NoResponseReceived") return "tent";
@@ -2494,7 +2557,7 @@ async function loadCal() {
   renderMini();
   try {
     const r = await api("GET", "/api/calendar?start=" + isoDate(start) + "&days=" + days);
-    cal.events = r.events; cal.work = [r.work_start, r.work_end];
+    cal.events = r.events; cal.work = [r.work_start, r.work_end]; cal.colors = r.colors || []; renderLegend();
   } catch (e) { $("calErr").textContent = e.message; cal.events = []; }
   renderCal();
 }
@@ -2528,7 +2591,7 @@ function renderWeek(start, n) {
   days.forEach((d) => {
     const c = el("div");
     eventsOn(d).filter(isAllDay).forEach((e) => {
-      const p = el("div", "adv " + evClass(e), e.subject || "(без темы)");
+      const p = paintEv(el("div", "adv " + evClass(e), e.subject || "(без темы)"), e);
       p.onclick = () => showEvent(e);
       dayDrag(p, e);
       c.appendChild(p);
@@ -2548,7 +2611,7 @@ function renderWeek(start, n) {
       col.appendChild(work);
     }
     layoutDay(eventsOn(d).filter((e) => !isAllDay(e)), d).forEach(({ e, s, f, c, cols }) => {
-      const b = el("div", "evb " + evClass(e) + (new Date(e.end) < now ? " past" : "") + (e.id === cal.selId ? " on" : "") + (f - s < 40 ? " short" : ""));
+      const b = paintEv(el("div", "evb " + evClass(e) + (new Date(e.end) < now ? " past" : "") + (e.id === cal.selId ? " on" : "") + (f - s < 40 ? " short" : "")), e);
       b.style.top = "calc(var(--hour) * " + s / 60 + " + 1px)";
       b.style.height = "calc(var(--hour) * " + Math.max(f - s, 20) / 60 + " - 2px)";
       b.style.left = "calc(" + (c / cols * 100) + "% + 2px)";
@@ -2631,7 +2694,7 @@ function renderMonth(start) {
     cell.appendChild(el("span", "cm-num", d.getDate() === 1 ? d.getDate() + " " + MONTHS_OF[d.getMonth()].slice(0, 3) : d.getDate()));
     const evs = eventsOn(d).sort((x, y) => isAllDay(y) - isAllDay(x) || new Date(x.start) - new Date(y.start));
     evs.slice(0, 3).forEach((e) => {
-      const p = el("div", "cm-ev " + evClass(e), (isAllDay(e) ? "" : hm(new Date(e.start)) + " ") + (e.subject || "(без темы)"));
+      const p = paintEv(el("div", "cm-ev " + evClass(e), (isAllDay(e) ? "" : hm(new Date(e.start)) + " ") + (e.subject || "(без темы)")), e);
       if (e.recurring) p.prepend(svgIcon("repeat", "rp"));
       p.onclick = (ev) => { ev.stopPropagation(); showEvent(e); };
       dayDrag(p, e);
@@ -2831,22 +2894,17 @@ async function showEvent(e) {
   if (failed) more.prepend(el("div", "err", failed));
 }
 function eventDetails(body, x) {
+  if (x.mail_category) {
+    const r = evRule(x), row = epRow("folder", "Категория: " + (x.mail_category_title || x.mail_category));
+    if (r && r.category === x.mail_category) { const dot = el("span", "catDot"); dot.style.background = r.color; row.lastChild.prepend(dot); }
+    body.appendChild(row);
+  }
   if (x.recurrence || x.recurring) body.appendChild(epRow("repeat", ruleText(x.recurrence) || "Повторяющаяся встреча"));
   if (x.location) body.appendChild(epRow("pin", x.location));
   if ((x.rooms || []).length) body.appendChild(epRow("door", x.rooms.map((r) => r.name || r.email).join(", ")));
   if (x.organizer || x.organizer_name) body.appendChild(epRow("user", x.my_response === "Organizer" ? "Вы организатор" : "Организатор: " + (x.organizer_name && x.organizer && x.organizer_name !== x.organizer ? x.organizer_name + " <" + x.organizer + ">" : x.organizer || x.organizer_name)));
   const people = [...(x.required || []).map((p) => [p, ""]), ...(x.optional || []).map((p) => [p, "по желанию"])];
-  if (people.length) {
-    const list = el("div", "people");
-    people.forEach(([p, note]) => {
-      const r = el("div", "");
-      r.append(el("span", "", p.name || p.email), el("span", "rs", " — " + [RESPONSE_TEXT[p.response] || "нет ответа", note].filter(Boolean).join(", ")));
-      r.title = p.email;
-      list.appendChild(r);
-    });
-    const row = el("div", "epRow"); row.append(svgIcon("people", ""), list);
-    body.appendChild(row);
-  }
+  if (people.length) body.appendChild(peopleBlock(people));
   if (x.is_meeting && x.my_response !== "Organizer") body.appendChild(epRow("check", x.cancelled ? "Встреча отменена" : "Ваш ответ: " + (RESPONSE_TEXT[x.my_response] || x.my_response)));
   // напоминание можно поменять и у чужой встречи
   const rl = el("label", "", "Напоминание" + (inSeries(x) ? " (для всей серии)" : "")), rs = el("select");
@@ -2861,7 +2919,9 @@ function eventDetails(body, x) {
     } catch (err) { alert(err.message); }
   };
   body.append(rl, rs);
-  if (x.body && x.body.trim()) body.appendChild(el("div", "epText", x.body.trim()));
+  if (x.doc) { body.appendChild(eventFrame(x)); $("evPanel").classList.add("wide"); }
+  else if (x.body && x.body.trim()) body.appendChild(el("div", "epText", x.body.trim()));
+  if ((x.discussion || []).length) body.appendChild(discussionBlock(x.discussion));
   if (x.cancelled) return;
   if (canEdit(x)) {
     const a = el("div", "actions"), edit = el("button", "btn primary", "Изменить"), del = el("button", "btn danger", notifies(x) ? "Отменить встречу" : "Удалить");
@@ -2906,6 +2966,96 @@ function eventDetails(body, x) {
     });
     body.appendChild(a);
   }
+}
+
+// участники: сводка ответов и короткий список, остальные по кнопке
+const PEOPLE_SHORT = 6;
+function peopleBlock(people) {
+  const list = el("div", "people"), counts = {};
+  people.forEach(([p]) => { const k = ["Accept", "Decline", "Tentative"].includes(p.response) ? p.response : "None"; counts[k] = (counts[k] || 0) + 1; });
+  if (people.length > 3) {
+    const sum = el("div", "respSum");
+    sum.appendChild(el("span", "", people.length + " участн."));
+    [["Accept", "приняли"], ["Tentative", "под вопросом"], ["Decline", "отклонили"], ["None", "без ответа"]].forEach(([k, t]) => {
+      if (!counts[k]) return;
+      const s = el("span"); s.append(el("b", "", String(counts[k])), " " + t); sum.appendChild(s);
+    });
+    list.appendChild(sum);
+  }
+  // сначала ответившие отказом и «под вопросом» — их важнее увидеть
+  const order = { Decline: 0, Tentative: 1, Accept: 2 };
+  const sorted = people.length > PEOPLE_SHORT ? [...people].sort((a, b) => (order[a[0].response] ?? 3) - (order[b[0].response] ?? 3)) : people;
+  const rows = sorted.map(([p, note]) => {
+    const r = el("div", "pp");
+    r.append(el("span", "dot " + (p.response || "")), el("span", "", p.name || p.email), el("span", "rs", [RESPONSE_TEXT[p.response] || "нет ответа", note].filter(Boolean).join(", ")));
+    r.title = p.email;
+    return r;
+  });
+  const cut = people.length > PEOPLE_SHORT + 2 ? PEOPLE_SHORT : rows.length;
+  rows.forEach((r, i) => { r.hidden = i >= cut; list.appendChild(r); });
+  if (cut < rows.length) {
+    const more = el("button", "linkBtn more", "Показать всех (" + rows.length + ")");
+    let open = false;
+    more.onclick = () => { open = !open; rows.forEach((r, i) => { r.hidden = !open && i >= cut; }); more.textContent = open ? "Свернуть" : "Показать всех (" + rows.length + ")"; };
+    list.appendChild(more);
+  }
+  const row = el("div", "epRow"); row.append(svgIcon("people", ""), list);
+  return row;
+}
+// описание встречи в том же виде, что письмо: баннеры, таблицы, ссылки; картинки из интернета по кнопке
+function eventFrame(x) {
+  const box = el("div", "evDoc mailBody"), bar = el("div", "imgBar"), f = document.createElement("iframe");
+  f.className = "mailFrame"; f.title = "Описание встречи";
+  f.setAttribute("sandbox", "allow-same-origin allow-popups allow-popups-to-escape-sandbox");
+  const show = (doc, blocked) => {
+    bar.textContent = ""; bar.hidden = !blocked;
+    if (blocked) {
+      bar.appendChild(el("span", "", "Картинки из интернета скрыты (" + blocked + ")."));
+      const b = el("button", "btn small", "Показать картинки");
+      b.onclick = async () => {
+        b.disabled = true;
+        try { const r = await api("GET", "/api/calendar/event?remote=1&id=" + encodeURIComponent(x.id)); show(r.doc, 0); }
+        catch (e) { alert(e.message); b.disabled = false; }
+      };
+      bar.appendChild(b);
+    }
+    f.srcdoc = doc;
+  };
+  f.onload = () => {
+    const d = f.contentDocument;
+    if (!d || !d.documentElement) return;
+    const fit = () => { f.style.height = Math.max(120, d.documentElement.scrollHeight) + "px"; };
+    fit();
+    d.querySelectorAll("img").forEach((i) => i.addEventListener("load", fit));
+    if (window.ResizeObserver) new ResizeObserver(fit).observe(d.body);
+  };
+  box.append(bar, f);
+  show(x.doc, x.blocked);
+  return box;
+}
+// письма по встрече: приглашение, ответы участников, обсуждение
+const DISC_KIND = { accept: "принял", decline: "отклонил", tentative: "под вопросом", cancel: "отмена", propose: "новое время", invite: "приглашение", reply: "ответ", mail: "письмо" };
+function discussionBlock(items) {
+  const box = el("div", "evDisc");
+  box.appendChild(el("h4", "", "Переписка по встрече · " + items.length));
+  const short = 5, rows = items.map((m) => {
+    const r = el("div", "dItem" + (m.is_read ? "" : " unread"));
+    r.tabIndex = 0; r.setAttribute("role", "button"); r.title = m.subject;
+    const when = new Date(m.received_at);
+    r.append(el("span", "k " + m.kind, DISC_KIND[m.kind] || m.kind), el("span", "w", m.sender_name || m.sender),
+      el("span", "t", sameDay(when, new Date()) ? hm(when) : when.getDate() + " " + MONTHS_OF[when.getMonth()].slice(0, 3) + " " + hm(when)),
+      el("span", "s", m.snippet || m.subject));
+    const open = () => { closeEvPanel(); showView("mail"); select(m.id); };
+    r.onclick = open; r.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
+    return r;
+  });
+  rows.forEach((r, i) => { r.hidden = i >= short; box.appendChild(r); });
+  if (rows.length > short + 1) {
+    const more = el("button", "linkBtn", "Ещё " + (rows.length - short));
+    more.onclick = () => { rows.forEach((r) => { r.hidden = false; }); more.remove(); };
+    box.appendChild(more);
+  } else rows.forEach((r) => { r.hidden = false; });
+  return box;
 }
 
 // форма встречи: новая или правка своей

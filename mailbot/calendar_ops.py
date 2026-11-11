@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import calendar as _cal
+import re
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Iterator, List, Optional, Sequence, Tuple
 
@@ -189,6 +190,41 @@ def first_matching(rule: dict, start: datetime) -> bool:
     return next(rule_dates(rule, start.astimezone(local_tz()).date())) == start.astimezone(local_tz()).date()
 
 
+# --- цвета встреч ---------------------------------------------------------
+DEFAULT_COLORS = [
+    {"name": "ПСИ", "color": "#7c3aed", "words": ["ПСИ"]},
+    {"name": "Встречи отдела", "color": "#dc2626", "words": ["отдел"]},
+    {"name": "Авто", "color": "#2563eb", "words": [], "category": "AUTO"},
+]
+COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+MAX_COLOR_RULES = 30
+
+
+def clean_colors(raw) -> List[dict]:
+    """Правила раскраски: имя (оно же категория Outlook), цвет #rrggbb и слова в теме, месте или организаторе."""
+    if not isinstance(raw, list):
+        raise ValueError("Цвета встреч — список правил")
+    if len(raw) > MAX_COLOR_RULES:
+        raise ValueError("Не больше {} правил раскраски".format(MAX_COLOR_RULES))
+    out = []
+    for r in raw:
+        if not isinstance(r, dict):
+            raise ValueError("Правило раскраски — объект")
+        name = str(r.get("name") or "").strip()[:40]
+        color = str(r.get("color") or "").strip()
+        words = r.get("words") or []
+        if isinstance(words, str):
+            words = words.split(",")
+        words = [w for w in (str(x).strip()[:60] for x in words) if w][:20]
+        category = str(r.get("category") or "").strip()[:60]
+        if not name:
+            raise ValueError("У правила раскраски нужно имя")
+        if not COLOR_RE.match(color):
+            raise ValueError("Цвет «{}» — в виде #rrggbb".format(name))
+        out.append({"name": name, "color": color.lower(), "words": words, "category": category})
+    return out
+
+
 # --- занятость -----------------------------------------------------------
 def common_slots(busy_by_person: dict, start_from: datetime, duration: timedelta, work_start: str, work_end: str,
                  count: int = 5, days: int = MAX_FREEBUSY_DAYS) -> List[dict]:
@@ -202,4 +238,4 @@ def utc_iso(value: datetime) -> str:
 
 
 __all__ = ["clean_spec", "clean_rule", "occurrences", "rule_dates", "common_slots", "first_matching",
-           "parse_iso", "SCOPES", "REMINDERS", "MAX_FREEBUSY_PEOPLE", "MAX_FREEBUSY_DAYS"]
+           "parse_iso", "clean_colors", "DEFAULT_COLORS", "SCOPES", "REMINDERS", "MAX_FREEBUSY_PEOPLE", "MAX_FREEBUSY_DAYS"]

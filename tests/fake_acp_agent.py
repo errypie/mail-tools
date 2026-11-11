@@ -125,7 +125,11 @@ def classify(rid, sid, text):
         answer = "это не JSON"
     else:
         invite = "Это приглашение на встречу." in head
-        category = ("MEETING" if invite else "RELEASE" if "ABC-" in mail else "AUTO" if "[JIRA]" in mail else
+        # приглашение — по теме, если такая категория есть (как просит промпт), иначе «Встречи»
+        topical = next((name for name, title in re.findall(r"^### (\w+) \(([^)]*)\)", head, re.M)
+                        if invite and title and name != "MEETING"
+                        and re.search(r"(?<!\w)" + re.escape(title.lower()) + r"(?!\w)", mail.lower())), None)
+        category = (topical if topical else "MEETING" if invite else "RELEASE" if "ABC-" in mail else "AUTO" if "[JIRA]" in mail else
                     "SPAM" if "Скидки" in mail else "UNINFO")
         data = {"category": category, "confidence": 0.9, "summary": "Тестовое саммари письма.",
                 "reason": "по ключевым словам", "jira_key": "ABC-123" if category == "RELEASE" else None,

@@ -13,8 +13,8 @@ from typing import Callable, List, Optional
 from urllib.error import URLError
 
 from .classifier import ClassifyError, build_prompt, lines, parse_response, substitute, variables
-from .db import Database, now_iso
-from .meetings import ACTION_TEXT, ACTIONS, AUTO_MIN_CONFIDENCE, MAX_REPLY_CHARS, enrich_invite, fmt_range, parse_iso, \
+from .db import Database, meeting_topic, now_iso
+from .meetings import MEETING_CATEGORY, ACTION_TEXT, ACTIONS, AUTO_MIN_CONFIDENCE, MAX_REPLY_CHARS, enrich_invite, fmt_range, parse_iso, \
     search_window
 from .gigacode_client import GigaCodeClient
 from .health import hint_for, timed
@@ -220,7 +220,9 @@ class Worker:
         email = self.db.get_email(eid)
         invite, decision = email.get("invite"), email.get("invite_decision")
         category = self.db.category(email.get("category")) or {}
-        if not (s["calendar_auto"] and category.get("invite_mode") == "auto" and invite and decision
+        # у тематической категории без своего режима действует режим «Встреч»
+        mode = category.get("invite_mode") or (self.db.category(MEETING_CATEGORY) or {}).get("invite_mode")
+        if not (s["calendar_auto"] and mode == "auto" and invite and decision
                 and decision.get("action") in ACTIONS and not email.get("invite_state")
                 and not email.get("category_manual") and (email.get("confidence") or 0) >= AUTO_MIN_CONFIDENCE):
             return
@@ -234,10 +236,30 @@ class Worker:
             self.db.record_service_error("outlook", "Автоответ на приглашение «{}»: {}".format(email["subject"], e))
 
     def events(self, start: datetime, end: datetime) -> List[dict]:
-        return self.calendar().events(start, end)
+        events = self.calendar().events(start, end)
+        self._mark_categories(events)
+        return events
 
-    def event(self, event_id: str) -> dict:
-        return self.calendar().get_event(event_id)
+    def _mark_categories(self, events: List[dict]) -> None:
+        """Категория встречи — та, что модель (или вы) поставили письму-приглашению."""
+        by_id, by_topic = self.db.invite_categories()
+        if not by_id and not by_topic:
+            return
+        titles = {c["name"]: c["title"] for c in self.db.categories()}
+        for e in events:
+            cat = by_id.get(e["id"]) or by_id.get(e.get("series_id") or "") or by_topic.get(meeting_topic(e.get("subject")).lower())
+            if cat:
+                e.update(mail_category=cat, mail_category_title=titles.get(cat, cat))
+
+    def event(self, event_id: str, allow_remote: bool = False) -> dict:
+        """Встреча с описанием в том же виде, что письмо, и перепиской по ней."""
+        ev = self.calendar().get_event(event_id)
+        raw, inline = ev.pop("body_html", "") or "", ev.pop("inline", None) or {}
+        if raw.strip():
+            ev["doc"], ev["blocked"] = render_html(raw, inline, allow_remote)
+        self._mark_categories([ev])
+        ev["discussion"] = self.db.meeting_mail(ev.get("conversation_id"), ev.get("subject") or "")
+        return ev
 
     def create_event(self, spec: dict) -> str:
         return self.calendar().create_event(spec)

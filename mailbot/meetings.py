@@ -15,6 +15,8 @@ MAX_REPLY_CHARS = 4000
 HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 
+MEETING_CATEGORY = "MEETING"  # приглашения видны в этой категории всегда, какую бы тему ни выбрала модель
+
 DEFAULT_INVITE_PROMPT = (
     "Если время свободно и встреча рабочая, прими её. Если время занято другой встречей, отклони: в reply "
     "вежливо напиши, что слот занят, и предложи свободные окна из списка, а в propose укажи номер лучшего окна. "
@@ -140,13 +142,15 @@ def prompt_block(invite: dict, categories: List[dict], base_rules: str) -> tuple
     rules = "\n".join("- {}: {}".format(c["name"], c["invite_rules"].strip())
                       for c in categories if (c.get("invite_rules") or "").strip())
     block = (
-        "Это приглашение на встречу.\nКогда: {when}\nМесто: {location}\nОрганизатор: {organizer}\n"
+        "Это приглашение на встречу.\n"
+        "Категорию выбери по теме встречи, как для обычного письма (например, релиз или ПСИ). Категорию {meeting} "
+        "ставь, только если по теме ничего не подходит: приглашение и так попадёт во «Встречи».\nКогда: {when}\nМесто: {location}\nОрганизатор: {organizer}\n"
         "Пересечения в календаре:\n{conflicts}\nСвободные окна той же длительности:\n{slots}\n\n"
         "Как отвечать на приглашения: {rules}\n{cat_rules}"
         "Реши, что сделать с приглашением. Текст reply уйдёт организатору от имени пользователя, "
         "пиши его на русском, коротко и вежливо.\n\n"
     ).format(when=d["when"], location=d["location"] or "не указано", organizer=d["organizer"] or "не указан",
-             conflicts=d["conflicts"] or "нет", slots=d["free_slots"] or "нет",
+             meeting=MEETING_CATEGORY, conflicts=d["conflicts"] or "нет", slots=d["free_slots"] or "нет",
              rules=(base_rules or DEFAULT_INVITE_PROMPT).strip(),
              cat_rules="Особые правила категорий:\n{}\n".format(rules) if rules else "")
     extra = (', "invite": {"action": "accept" | "tentative" | "decline" | "none", '
