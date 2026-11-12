@@ -200,6 +200,16 @@ nav button.add { color: var(--accent); }
 .svcName { font-size: 16px; font-weight: 500; }
 .svc { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .svc .card { margin: 0 0 12px; min-width: 0; }
+.statTiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin: 0 0 12px; }
+.card .kv + h3, .card .statBar + h3 { margin-top: 18px; }
+.card .statBar + .kv { margin-top: 4px; }
+.statTile { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; min-width: 0; }
+.statTile b { display: block; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.statTile span { color: var(--muted); font-size: 12.5px; }
+.statTile.warn b { color: var(--warn); } .statTile.bad b { color: var(--danger); }
+.statBar { height: 6px; border-radius: 3px; background: var(--code); overflow: hidden; margin-top: 8px; }
+.statBar i { display: block; height: 100%; background: var(--accent); }
+.statBar.warn i { background: var(--warn); } .statBar.bad i { background: var(--danger); }
 .kv { display: grid; grid-template-columns: auto 1fr; font-size: 14px; margin: 10px 0 0; }
 .kv dt, .kv dd { padding: 7px 0; border-top: 1px solid var(--border); }
 .kv dt { color: var(--muted); padding-right: 14px; }
@@ -788,6 +798,13 @@ nav button.on .n.u { background: none; color: var(--accent); }
         <div class="card" id="svcGiga"></div>
       </div>
       <div class="card" id="svcQueue"></div>
+      <div class="statTiles" id="statTiles"></div>
+      <div class="svc">
+        <div class="card" id="statMail"></div>
+        <div class="card" id="statMedia"></div>
+        <div class="card" id="statAi"></div>
+        <div class="card" id="statStorage"></div>
+      </div>
       <div class="card">
         <h3>История ошибок</h3>
         <div id="errorList"></div>
@@ -1296,9 +1313,104 @@ async function refreshStatus() {
   try { st = await api("GET", "/api/status"); } catch (e) { return; }
   renderPills(st);
   // не перерисовываем под курсором кнопку, которая сейчас выполняет проверку
-  if (!$("statusPage").hidden && !document.querySelector("#statusPage button:disabled")) renderStatusPage(st);
+  if (!$("statusPage").hidden && !document.querySelector("#statusPage button:disabled")) { renderStatusPage(st); loadStats(); }
 }
-function openStatus() { $("statusPage").hidden = false; refreshStatus(); }
+// ---------- сводка данных на странице статуса ----------
+// Считается дольше статуса, поэтому отдельным запросом: при открытии страницы и раз в 30 секунд, пока она открыта.
+const STATS_MS = 30000;
+let statsAt = 0;
+const num = (n) => (n || 0).toLocaleString("ru-RU");
+function ago(iso) {
+  if (!iso) return "—";
+  const s = Math.max(0, (Date.now() - new Date(iso)) / 1000);
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return d ? d + " д " + h + " ч" : h ? h + " ч " + m + " мин" : m + " мин";
+}
+function statTile(value, label, cls) {
+  const t = el("div", "statTile" + (cls ? " " + cls : ""));
+  t.append(el("b", "", value), el("span", "", label));
+  return t;
+}
+function statBar(part, whole, cls) {
+  const b = el("div", "statBar" + (cls ? " " + cls : "")), i = el("i");
+  i.style.width = Math.min(100, whole ? part / whole * 100 : 0) + "%";
+  b.appendChild(i);
+  return b;
+}
+async function loadStats(force) {
+  if ($("statusPage").hidden || (!force && Date.now() - statsAt < STATS_MS)) return;
+  statsAt = Date.now();
+  let s;
+  try { s = await api("GET", "/api/stats"); } catch (e) { statsAt = 0; return; }
+  renderStats(s);
+}
+function renderStats(s) {
+  const e = s.emails, md = s.media, st = s.storage, db = s.db, runs = s.runs;
+  const m = (k) => md[k] || { count: 0, bytes: 0, all: 0, described: 0 };
+  const disk = st.disk, diskFree = disk ? disk.free / disk.total : 1;
+  const tiles = $("statTiles"); tiles.textContent = "";
+  tiles.append(statTile(num(e.total), "писем в базе"), statTile(num(e.unread), "непрочитанных"),
+    statTile(num(m("photo").count), "фото"), statTile(num(m("file").count), "файлов"),
+    statTile(num(m("archive").count), "архивов"), statTile(num(m("link").count), "ссылок"),
+    statTile(num(s.categories_total), "категорий"),
+    statTile(s.tasks ? num(s.tasks.done) + " / " + num(s.tasks.total) : "—", "задач выполнено", s.tasks && s.tasks.overdue ? "warn" : ""),
+    statTile(fmtSize(db.bytes + db.wal_bytes), "база данных"),
+    statTile(disk ? fmtSize(disk.free) : "—", "свободно на диске", diskFree < 0.05 ? "bad" : diskFree < 0.15 ? "warn" : ""));
+
+  const mb = $("statMail"); mb.textContent = ""; mb.appendChild(el("h3", "", "Почта"));
+  mb.appendChild(kv([["Всего писем", num(e.total)], ["За сутки / за неделю", num(e.day) + " / " + num(e.week)],
+    ["Непрочитанных", num(e.unread)], ["С флажком", num(e.flagged)], ["С вложениями", num(e.with_files)],
+    ["Приглашений на встречи", num(e.invites)], ["Цепочек", num(e.threads)], ["Отправителей", num(e.senders)],
+    ["Самое старое письмо", fmtTime(e.oldest)], ["Самое новое", fmtTime(e.newest)],
+    ["Черновиков GigaMail", num(s.drafts)], ["Подписей", num(s.signatures)]]));
+  if (s.folders.length) {
+    mb.appendChild(el("h3", "", "По папкам"));
+    mb.appendChild(kv(s.folders.map((f) => [f.name, num(f.count)])));
+  }
+
+  const mdb = $("statMedia"); mdb.textContent = ""; mdb.appendChild(el("h3", "", "Вложения и ссылки"));
+  const row = (k, label) => [label, m(k).count ? num(m(k).count) + (k === "link" ? "" : " · " + fmtSize(m(k).bytes)) +
+    (m(k).all > m(k).count ? " (копий: " + num(m(k).all - m(k).count) + ")" : "") : "0"];
+  const items = ["photo", "file", "archive", "link"].reduce((a, k) => a + m(k).count, 0);
+  const described = ["photo", "file", "archive", "link"].reduce((a, k) => a + m(k).described, 0);
+  mdb.appendChild(kv([row("photo", "Фото"), row("file", "Файлы"), row("archive", "Архивы"), row("link", "Ссылки"),
+    ["С описанием от GigaCode", num(described) + " из " + num(items)]]));
+  mdb.appendChild(statBar(described, items));
+  const bf = s.backfill;
+  if (bf && bf.enabled !== false) {
+    mdb.appendChild(el("h3", "", "Подгрузка старой почты"));
+    mdb.appendChild(kv([["Глубина", bf.days ? bf.days + " дн." : ""], ["Состояние", bf.running ? "идёт: " + (bf.folder || "") : "готово"],
+      ["Папок готово", bf.folders ? (bf.done_folders || 0) + " из " + bf.folders : ""], ["Загружено писем", bf.loaded != null ? num(bf.loaded) : ""]]));
+  }
+
+  const ai = $("statAi"); ai.textContent = ""; ai.appendChild(el("h3", "", "Разбор и GigaCode"));
+  ai.appendChild(kv([["Разобрано за сутки", num(e.classified_day)], ["Категорий", num(s.categories_total)],
+    ["Категория выбрана вручную", num(s.categories_manual)],
+    ["Запусков скиллов", num(runs.total) + (runs.week ? " (за неделю " + num(runs.week) + ")" : "")],
+    ["Успешно / с ошибкой", num(runs.done) + " / " + num(runs.error)], ["Выполняется", num((runs.running || 0) + (runs.starting || 0))],
+    ["Среднее время скилла", runs.avg_seconds != null ? (runs.avg_seconds < 90 ? runs.avg_seconds + " с" : Math.round(runs.avg_seconds / 60) + " мин") : ""],
+    ["Последний запуск", runs.last ? fmtTime(runs.last) : ""], ["Ошибок сервисов за сутки", num(s.errors_day)]]));
+  if (s.categories.length) {
+    ai.appendChild(el("h3", "", "Письма по категориям"));
+    ai.appendChild(kv(s.categories.map((c) => [c.title, num(c.count)])));
+  }
+  if (s.tasks) {
+    ai.appendChild(el("h3", "", "Задачи Outlook"));
+    ai.appendChild(kv([["Всего", num(s.tasks.total)], ["Выполнено", num(s.tasks.done)], ["Открыто", num(s.tasks.open)],
+      ["Просрочено", num(s.tasks.overdue)]]));
+  }
+
+  const sb = $("statStorage"); sb.textContent = ""; sb.appendChild(el("h3", "", "Хранилище и сервис"));
+  sb.appendChild(kv([["База данных", fmtSize(db.bytes)], ["Журнал записи (WAL)", db.wal_bytes ? fmtSize(db.wal_bytes) : "0"],
+    ["Пустое место в базе", fmtSize(db.free_bytes)], ["Сжатые превью фото", num(st.thumbs_files) + " · " + fmtSize(st.thumbs_bytes)],
+    ["Кэш вложений в памяти", fmtSize(st.cache_bytes) + " из " + fmtSize(st.cache_limit)],
+    ["Диск", disk ? "свободно " + fmtSize(disk.free) + " из " + fmtSize(disk.total) : ""]]));
+  if (disk) sb.appendChild(statBar(disk.total - disk.free, disk.total, diskFree < 0.05 ? "bad" : diskFree < 0.15 ? "warn" : ""));
+  sb.appendChild(kv([["Работает без перезапуска", ago(s.service.started_at)], ["Запущен", fmtTime(s.service.started_at)],
+    ["Python / SQLite", s.service.python + " / " + db.sqlite], ["Поиск по тексту (FTS5)", db.fts ? "есть" : "нет — поиск медленнее"],
+    ["Сжатие фото (Pillow)", s.service.pillow ? "есть" : "нет — фото грузятся оригиналами"]]));
+}
+function openStatus() { $("statusPage").hidden = false; refreshStatus(); loadStats(true); }
 $("pillOutlook").onclick = openStatus;
 $("pillGiga").onclick = openStatus;
 $("statusClose").onclick = () => { $("statusPage").hidden = true; };
@@ -2084,7 +2196,8 @@ function attKind(a) {
 function fmtSize(n) {
   if (n < 1024) return n + " Б";
   if (n < 1024 * 1024) return Math.round(n / 1024) + " КБ";
-  return (n / 1024 / 1024).toFixed(1).replace(".", ",") + " МБ";
+  if (n < 1024 ** 3) return (n / 1024 / 1024).toFixed(1).replace(".", ",") + " МБ";
+  return (n / 1024 ** 3).toFixed(1).replace(".", ",") + " ГБ";
 }
 function attStrip(m) {
   // встроенные картинки письма уже видны в тексте, как в Outlook их в списке нет

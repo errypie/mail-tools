@@ -945,6 +945,10 @@ class Handler(BaseHTTPRequestHandler):
     def status(self):
         self._json(200, self.ctx.worker.health())
 
+    @route("GET", "/api/stats")
+    def stats(self):
+        self._json(200, self.ctx.worker.stats())
+
     @route("POST", "/api/status/agent-check")
     def agent_check(self):
         self._json(200, self.ctx.worker.check_agent())

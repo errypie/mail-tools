@@ -50,6 +50,8 @@ class Worker:
         self.source = None
         self.wake = threading.Event()
         self.backfill_wake = threading.Event()
+        self.started_at = now_iso()
+        self._tasks_stat = (0.0, None)
         self.status = {"last_poll_at": None, "last_ok_at": None, "last_error": None, "last_new": 0,
                        "skipped_total": 0, "classifier_error": None, "classifier_ok_at": None}
         self._skipped_ids = set()
@@ -856,6 +858,56 @@ class Worker:
                           failed=counts.get("failed", 0), classified=counts.get("classified", 0)),
             "errors": [dict(e, hint=hint_for(e["source"], e["message"])) for e in self.db.service_errors()],
         }
+
+    def stats(self) -> dict:
+        """Подробная сводка для страницы статуса. Считается дольше health(), поэтому отдельно и реже."""
+        data = self.db.stats()
+        folder = os.path.dirname(os.path.abspath(self.db.path))
+        thumbs_bytes = thumbs_files = 0
+        try:
+            for e in os.scandir(self.thumbs.folder):
+                if e.is_file():
+                    thumbs_files += 1
+                    thumbs_bytes += e.stat().st_size
+        except OSError:
+            pass
+        try:
+            disk = shutil.disk_usage(folder)
+            disk = {"total": disk.total, "free": disk.free}
+        except OSError:
+            disk = None
+        with self._cache_lock:
+            cache_bytes = sum(len(v) for v in self._att_cache.values())
+        names = {}
+        try:
+            names = {f["id"]: f["name"] for f in self.folders()}
+        except Exception:  # noqa: BLE001 — без имён покажем как есть
+            pass
+        data["folders"] = sorted(({"id": k, "name": names.get(k) or k or "без папки", "count": v}
+                                  for k, v in data["folders"].items()), key=lambda f: -f["count"])
+        data["storage"] = {"thumbs_bytes": thumbs_bytes, "thumbs_files": thumbs_files, "cache_bytes": cache_bytes,
+                           "cache_limit": ATTACHMENT_CACHE_BYTES, "disk": disk}
+        data["service"] = {"started_at": self.started_at, "python": "{}.{}.{}".format(*__import__("sys").version_info[:3]),
+                           "pillow": thumbs.AVAILABLE}
+        data["backfill"] = self.status.get("backfill")
+        data["tasks"] = self._task_counts()
+        return data
+
+    def _task_counts(self) -> Optional[dict]:
+        """Задачи Outlook: открытые, просроченные, выполненные. Ходим в Exchange не чаще раза в 5 минут."""
+        at, cached = self._tasks_stat
+        if time.time() - at < 300:
+            return cached
+        try:
+            items = self.calendar().tasks_list()
+            today = datetime.now().date().isoformat()
+            done = sum(1 for t in items if t.get("status") == "Completed")
+            overdue = sum(1 for t in items if t.get("status") != "Completed" and t.get("due") and str(t["due"])[:10] < today)
+            cached = {"total": len(items), "done": done, "open": len(items) - done, "overdue": overdue}
+        except Exception:  # noqa: BLE001 — задачи недоступны: просто не покажем
+            cached = None
+        self._tasks_stat = (time.time(), cached)
+        return cached
 
     # --- скиллы -----------------------------------------------------------
     def start_run(self, email_id: int, title: str, prompt: str, category: Optional[dict] = None) -> int:

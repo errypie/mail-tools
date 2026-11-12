@@ -975,6 +975,61 @@ class Database:
         with self.conn() as c:
             return [dict(r) for r in c.execute("SELECT * FROM service_errors ORDER BY id DESC LIMIT ?", (limit,))]
 
+    def stats(self) -> dict:
+        """Сводка для страницы статуса: письма, папки, категории, вложения, запуски, размер базы."""
+        now = datetime.now(timezone.utc)
+        day, week = [(now - timedelta(days=d)).isoformat(timespec="seconds") for d in (1, 7)]
+        with self.conn() as c:
+            e = c.execute(
+                "SELECT COUNT(*) total, SUM(is_read = 0) unread, SUM(has_attachments) with_files, SUM(flag > 0) flagged, "
+                "SUM(invite IS NOT NULL) invites, MIN(received_at) oldest, MAX(received_at) newest, "
+                "SUM(received_at >= ?) day, SUM(received_at >= ?) week, SUM(classified_at >= ?) classified_day, "
+                "COUNT(DISTINCT NULLIF(sender, '')) senders, COUNT(DISTINCT conversation_id) threads "
+                "FROM emails WHERE COALESCE(folder, '') <> ?", (day, week, day, GONE)).fetchone()
+            folders = {r["folder"] or "": r["n"] for r in c.execute(
+                "SELECT folder, COUNT(*) n FROM emails WHERE COALESCE(folder, '') <> ? GROUP BY folder", (GONE,))}
+            categories = {r["category"] or "": r["n"] for r in c.execute(
+                "SELECT category, COUNT(*) n FROM emails WHERE status = 'classified' AND COALESCE(folder, '') <> ? "
+                "GROUP BY category", (GONE,))}
+            manual = c.execute("SELECT COUNT(*) FROM emails WHERE category_manual = 1").fetchone()[0]
+            # вложения — как в разделе «Вложения»: повторы одного файла считаем один раз
+            media = {r["kind"]: {"count": r["n"], "bytes": r["bytes"] or 0, "all": r["all_n"], "described": r["described"]}
+                     for r in c.execute(
+                         "SELECT kind, COUNT(*) n, SUM(sz) bytes, SUM(cnt) all_n, SUM(described) described FROM ("
+                         " SELECT m.kind, MAX(m.size) sz, COUNT(*) cnt, MAX(m.description <> '') described"
+                         " FROM media m JOIN emails e ON e.id = m.email_id WHERE COALESCE(e.folder, '') <> ?"
+                         " GROUP BY m.kind, COALESCE(m.dkey, 'i' || m.id)) GROUP BY kind", (GONE,))}
+            runs = {r["status"]: r["n"] for r in c.execute("SELECT status, COUNT(*) n FROM runs GROUP BY status")}
+            run = c.execute(
+                "SELECT SUM(created_at >= ?) week, AVG(CASE WHEN status = 'done' AND finished_at IS NOT NULL "
+                "THEN (julianday(finished_at) - julianday(created_at)) * 86400 END) avg_s, MAX(created_at) last "
+                "FROM runs", (week,)).fetchone()
+            errors_day = c.execute("SELECT COUNT(*) FROM service_errors WHERE last_at >= ?", (day,)).fetchone()[0]
+            drafts = c.execute("SELECT COUNT(*) FROM drafts").fetchone()[0]
+            signatures = c.execute("SELECT COUNT(*) FROM signatures").fetchone()[0]
+            titles = {r["name"]: r["title"] for r in c.execute("SELECT name, title FROM categories ORDER BY position")}
+            page_size = c.execute("PRAGMA page_size").fetchone()[0]
+            pages = c.execute("PRAGMA page_count").fetchone()[0]
+            free = c.execute("PRAGMA freelist_count").fetchone()[0]
+            sqlite_version = c.execute("SELECT sqlite_version()").fetchone()[0]
+
+        def size(path):
+            try:
+                return os.path.getsize(path)
+            except OSError:
+                return 0
+        return {
+            "emails": dict(e), "folders": folders, "categories_manual": manual, "categories_total": len(titles),
+            "categories": sorted(({"name": k, "title": titles.get(k) or k or "без категории", "count": v}
+                                  for k, v in categories.items()), key=lambda x: -x["count"]),
+            "media": media,
+            "runs": dict(runs, total=sum(runs.values()), week=run["week"] or 0,
+                         avg_seconds=round(run["avg_s"]) if run["avg_s"] is not None else None, last=run["last"]),
+            "errors_day": errors_day, "drafts": drafts, "signatures": signatures,
+            "db": {"bytes": size(self.path), "wal_bytes": size(self.path + "-wal"), "free_bytes": free * page_size,
+                   "used_bytes": (pages - free) * page_size, "fts": self.fts, "sqlite": sqlite_version},
+        }
+
     def queue_stats(self) -> dict:
         with self.conn() as c:
             row = c.execute("SELECT MIN(received_at) oldest FROM emails WHERE status IN ('new', 'classifying')").fetchone()
