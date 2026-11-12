@@ -156,7 +156,8 @@ body.dragging iframe, body.dragging textarea { pointer-events: none; }
 body.solo nav, body.solo #listPane, body.solo .split, body.solo .backBtn, body.solo .soloHide, body.solo #rail, body.solo .hsearch { display: none !important; }
 body.solo #detailWrap { max-width: 1600px; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 0 18px; align-items: start; }
 body.solo #detailWrap > * { grid-column: 2; }
-body.solo #detailWrap > :is(.rpHead, .rpFrom, .rpActions, .attStrip, .empty, .compose, .sentBody) { grid-column: 1 / -1; }
+body.solo #detailWrap > :is(.rpHead, .rpFrom, .rpActions, .attStrip, .empty, .compose, .sentBody, .conv) { grid-column: 1 / -1; }
+body.solo #detailWrap.hasConv > .mailBody { grid-row: 5 / span 20; }
 body.solo #detailWrap > .mailBody { grid-column: 1; grid-row: 4 / span 20; }
 body.solo #detailWrap > .aiBox { margin-top: 14px; }
 body.solo .bodytext { max-height: none; }
@@ -652,8 +653,14 @@ nav button.on .n.u { background: none; color: var(--accent); }
 .movePop .lst { overflow-y: auto; }
 .movePop button { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; padding: 7px 10px; border-radius: 8px; cursor: pointer; text-align: left; font-size: 14px; }
 .movePop button:hover, .movePop button.on { background: var(--soft); color: var(--accent); }
-.thread { margin: 14px 0; contain: inline-size; }  /* длинные строки цепочки не раздвигают панель */
-.thread h3 { font-size: 13px; font-weight: 600; color: var(--muted); margin: 0 0 8px; text-transform: uppercase; letter-spacing: .04em; }
+.conv { margin: 12px 0 4px; contain: inline-size; }  /* длинные строки цепочки не раздвигают панель */
+.conv.after { margin-top: 14px; }
+.convCount { align-self: center; flex-shrink: 0; font-size: 12.5px; color: var(--muted); background: var(--soft); border-radius: 10px; padding: 2px 9px; }
+.tItem.unread .tFrom { color: var(--accent); }
+.tItem.open .tPrev { display: none; }
+.tTo { font-size: 12.5px; color: var(--muted); padding: 6px 12px 8px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.tMore { display: block; width: 100%; border: 1px dashed var(--border); background: none; color: var(--muted); border-radius: 12px; padding: 7px; margin-bottom: 8px; cursor: pointer; font-size: 13px; }
+.tMore:hover { color: var(--accent); border-color: var(--accent); }
 .tItem { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 8px; overflow: hidden; }
 .tHead { display: flex; gap: 10px; align-items: center; padding: 9px 12px; cursor: pointer; }
 .tHead:hover { background: var(--bg); }
@@ -1343,8 +1350,14 @@ function renderList(data, cats) {
     rows = [];
     data.emails.forEach((m) => {
       const key = m.conversation_id;
-      if (key && seen.has(key)) { const g = seen.get(key); g.count++; g.unread = g.unread || !m.is_read; return; }
-      const g = Object.assign({}, m, { count: 1, unread: !m.is_read });
+      if (key && seen.has(key)) {
+        const g = seen.get(key); g.count++; g.unread = g.unread || !m.is_read; g.ids.push(m.id);
+        g.has_attachments = g.has_attachments || m.has_attachments;
+        if (m.flag === 2) g.flag = 2;
+        if (!g.people.includes(m.sender_name || m.sender)) g.people.push(m.sender_name || m.sender);
+        return;
+      }
+      const g = Object.assign({}, m, { count: 1, unread: !m.is_read, people: [m.sender_name || m.sender], ids: [m.id] });
       if (key) seen.set(key, g);
       rows.push(g);
     });
@@ -1359,11 +1372,13 @@ function renderList(data, cats) {
     const g = dayGroup(m.received_at);
     if (g !== group) { group = g; box.appendChild(el("div", "grp", g)); }
     const unread = m.count ? m.unread : !m.is_read;
-    const r = el("div", "row" + (m.id === selected ? " on" : "") + (unread ? " unread" : "")), main = el("div", "main");
+    const on = m.id === selected || (m.ids && m.ids.includes(selected));  // открыто любое письмо цепочки
+    const r = el("div", "row" + (on ? " on" : "") + (unread ? " unread" : "")), main = el("div", "main");
     r.appendChild(avatar(m.sender_name || m.sender, m.sender));
     r.appendChild(main);
     const top = el("div", "top");
-    top.appendChild(el("span", "from", m.sender_name || m.sender));
+    const who = m.people && m.people.length > 1 ? m.people.slice(0, 3).join(", ") + (m.people.length > 3 ? " и др." : "") : m.sender_name || m.sender;
+    top.appendChild(el("span", "from", who));
     if (m.count > 1) { const c = el("span", "cnt", m.count); c.title = "Писем в цепочке: " + m.count; top.appendChild(c); }
     if (m.invite) top.appendChild(svgIcon("cal", "ico inv"));
     if (m.has_attachments) top.appendChild(svgIcon("clip"));
@@ -1417,7 +1432,7 @@ function renderListTools() {
   tools.textContent = "";
   [["unread", "Непрочитанные", "Показать только непрочитанные"], ["threads", "Цепочки", "Группировать письма одной переписки"]].forEach(([k, t, title]) => {
     const b = el("button", view[k] ? "on" : "", t); b.title = title;
-    b.onclick = () => { view[k] = !view[k]; stored("gm.view." + k, view[k] ? "1" : null); listSig = ""; refresh(); };
+    b.onclick = () => { view[k] = !view[k]; stored("gm.view." + k, view[k] ? "1" : "0"); listSig = ""; refresh(); };
     tools.appendChild(b);
   });
 }
@@ -1463,7 +1478,7 @@ $("pollBtn").onclick = async () => { await api("POST", "/api/poll"); mb.at = 0; 
 // ---------- ящик: папки, действия, поиск ----------
 const FOLDER_ICON = { inbox: "inbox", sent: "send", trash: "trash", junk: "ban", archive: "archive", drafts: "pen", outbox: "send" };
 const mb = { folders: [], inbox: null, trash: null, at: 0, error: "", more: {}, loading: false, loadError: "" };
-const view = { threads: stored("gm.view.threads") === "1", unread: stored("gm.view.unread") === "1" };
+const view = { threads: stored("gm.view.threads") !== "0", unread: stored("gm.view.unread") === "1" };  // цепочки включены, пока их не выключат
 const search = { q: "", emails: [], loading: false, error: "" };
 let listLimit = 200, autoRead = null;
 async function loadFolders(fresh) {
@@ -1586,42 +1601,73 @@ document.addEventListener("keydown", (e) => {
   if (m && m.id === selected) deleteEmail(m.id, m.folder);
 });
 
-// ---------- цепочка писем ----------
-const threadCache = new Map();
-function threadBlock(m) {
-  const box = el("div", "thread");
-  box.hidden = true;
-  const draw = (rows) => {
-    if (rows.length < 2) { box.hidden = true; return; }
-    box.hidden = false; box.textContent = "";
-    box.appendChild(el("h3", "", "Цепочка · " + rows.length + " " + plural(rows.length, "письмо", "письма", "писем")));
-    rows.forEach((t) => {
-      const it = el("div", "tItem" + (t.id === m.id ? " cur" : "")), head = el("div", "tHead"), main = el("div", "tMain"), body = el("div", "tBody");
-      main.append(el("div", "tFrom", (t.sender_name || t.sender) + (t.id === m.id ? " · это письмо" : "")),
-        el("div", "tPrev", (t.subject || "") + (t.preview ? " — " + t.preview : "")));
-      const when = el("div", "tWhen", new Date(t.received_at).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }));
-      if (t.folder && t.folder !== mb.inbox && folderName(t.folder)) when.appendChild(el("div", "", folderName(t.folder)));
-      head.append(avatar(t.sender_name || t.sender, t.sender), main, when);
-      body.hidden = true;
-      head.onclick = () => {
-        if (t.id === m.id) { const f = $("detailWrap").querySelector(":scope > .mailBody"); if (f) f.scrollIntoView({ behavior: "smooth" }); return; }
-        body.hidden = !body.hidden;
-        if (!body.hidden && !body.firstChild) {
-          const a = el("div", "actions"), open = el("button", "btn small", "Открыть письмо");
-          open.onclick = () => select(t.id);
-          a.appendChild(open);
-          body.append(mailFrame(t), a);
-        }
-      };
-      it.append(head, body);
-      box.appendChild(it);
+// ---------- переписка в карточке письма ----------
+// Письма цепочки идут по порядку, как в чате: более ранние — свёрнутыми карточками над открытым письмом,
+// более поздние (если открыли не последнее) — под ним. Карточка разворачивается на месте.
+const threadCache = new Map(), threadOpen = new Set(), threadReadDone = new Set();
+const CONV_SHOWN = 3;  // сколько ранних писем видно сразу, остальные — по кнопке
+function convCard(t) {
+  const it = el("div", "tItem" + (t.is_read ? "" : " unread")), head = el("div", "tHead"), main = el("div", "tMain"), body = el("div", "tBody");
+  main.append(el("div", "tFrom", t.sender_name || t.sender), el("div", "tPrev", t.preview || t.summary || ""));
+  const when = el("div", "tWhen", new Date(t.received_at).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }));
+  if (t.folder && t.folder !== mb.inbox && folderName(t.folder)) when.appendChild(el("div", "", folderName(t.folder)));
+  head.append(avatar(t.sender_name || t.sender, t.sender), main, when);
+  head.tabIndex = 0; head.setAttribute("role", "button"); head.title = "Развернуть письмо";
+  const fill = () => {
+    if (body.firstChild) return;
+    const a = el("div", "actions");
+    [["reply", "Ответить", "reply"], ["reply_all", "Ответить всем", "replyAll"], ["forward", "Переслать", "forward"]].forEach(([kind, title, icon]) => {
+      const b = el("button", "btn small ghost", title); b.prepend(svgIcon(icon, "ico"));
+      b.onclick = () => startCompose(kind, t.id);
+      a.appendChild(b);
     });
+    const open = el("button", "btn small", "Открыть отдельно"); open.title = "Сделать это письмо основным: вложения, GigaCode, действия";
+    open.onclick = () => select(t.id);
+    a.appendChild(open);
+    if (t.recipients) body.appendChild(el("div", "tTo", "Кому: " + t.recipients));
+    body.append(mailFrame(t), a);
   };
-  if (m.conversation_id) {
-    if (threadCache.has(m.id)) draw(threadCache.get(m.id));
-    else api("GET", "/api/emails/" + m.id + "/thread").then((r) => { threadCache.set(m.id, r.emails); draw(r.emails); }).catch(() => {});
-  }
-  return box;
+  const toggle = () => {
+    const show = body.hidden;
+    body.hidden = !show; it.classList.toggle("open", show);
+    if (show) { threadOpen.add(t.id); fill(); } else threadOpen.delete(t.id);
+  };
+  body.hidden = !threadOpen.has(t.id);
+  if (!body.hidden) { it.classList.add("open"); fill(); }
+  head.onclick = toggle;
+  head.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } };
+  it.append(head, body);
+  return it;
+}
+// before — над открытым письмом, after — под ним; count — значок в заголовке
+function threadInto(m, before, after, count) {
+  const draw = (rows) => {
+    if (rows.length < 2 || !rows.some((t) => t.id === m.id)) return;
+    count.textContent = rows.length + " " + plural(rows.length, "письмо", "письма", "писем"); count.hidden = false;
+    const i = rows.findIndex((t) => t.id === m.id), older = rows.slice(0, i), newer = rows.slice(i + 1);
+    before.textContent = ""; after.textContent = "";
+    const hiddenOld = older.length > CONV_SHOWN + 1 ? older.slice(0, older.length - CONV_SHOWN) : [];
+    if (hiddenOld.length) {
+      const more = el("button", "tMore", "Ещё " + hiddenOld.length + " " + plural(hiddenOld.length, "письмо", "письма", "писем") + " раньше");
+      more.onclick = () => { more.replaceWith(...hiddenOld.map(convCard)); };
+      before.appendChild(more);
+    }
+    older.slice(hiddenOld.length).forEach((t) => before.appendChild(convCard(t)));
+    newer.forEach((t) => after.appendChild(convCard(t)));
+    before.hidden = !before.childNodes.length; after.hidden = !after.childNodes.length;
+    $("detailWrap").classList.toggle("hasConv", !before.hidden);
+    // открыли цепочку — непрочитанные письма той же папки считаем прочитанными, как в Outlook
+    if (!threadReadDone.has(m.id)) {
+      threadReadDone.add(m.id);
+      const unread = rows.filter((t) => !t.is_read && t.id !== m.id && t.folder === m.folder);
+      if (unread.length) Promise.all(unread.map((t) => api("POST", "/api/emails/" + t.id + "/read", { read: true }).catch(() => {})))
+        .then(() => { unread.forEach((t) => { t.is_read = 1; }); mb.at = 0; listSig = ""; refresh(); });
+    }
+  };
+  if (!m.conversation_id) return;
+  // храним обещание, а не ответ: перерисовка до ответа не шлёт второй запрос, который вернул бы старое «прочитано»
+  if (!threadCache.has(m.id)) threadCache.set(m.id, api("GET", "/api/emails/" + m.id + "/thread").then((r) => r.emails));
+  threadCache.get(m.id).then((rows) => { if (before.isConnected) draw(rows); }).catch(() => threadCache.delete(m.id));
 }
 
 // ---------- письмо ----------
@@ -1632,7 +1678,7 @@ function select(id) {
   if (compose) leaveCompose().then(() => { listSig = ""; refresh(); });
   selectedDraft = null;
   document.querySelectorAll(".movePop").forEach((p) => p.remove());
-  if (id !== selected) { autoRead = id; threadCache.clear(); }
+  if (id !== selected) { autoRead = id; threadCache.clear(); threadOpen.clear(); }
   selected = id; detailSig = ""; listSig = "";
   $("layout").classList.add("reading");
   refresh(); refreshDetail();
@@ -1650,8 +1696,10 @@ function renderDetail(m) {
   const back = el("button", "btn small backBtn", "← К списку");
   back.onclick = () => { selected = null; $("layout").classList.remove("reading"); listSig = ""; refresh(); };
   w.appendChild(back);
-  const head = el("div", "rpHead");
+  const head = el("div", "rpHead"), convCount = el("span", "convCount");
+  convCount.hidden = true; convCount.title = "Писем в переписке";
   head.appendChild(el("h2", "", m.subject || "(без темы)"));
+  head.appendChild(convCount);
   if (!SOLO_ID) {
     const pop = el("button", "btn small", "↗ В отдельном окне");
     pop.onclick = () => window.open("/?email=" + m.id, "mail" + m.id, "width=1280,height=860");
@@ -1666,6 +1714,10 @@ function renderDetail(m) {
     }
   }
   w.appendChild(head);
+  const convBefore = el("div", "conv"), convAfter = el("div", "conv after");
+  convBefore.hidden = convAfter.hidden = true;
+  w.classList.remove("hasConv");
+  w.appendChild(convBefore);
   if (SOLO_ID) document.title = (m.subject || "(без темы)") + " — GigaMail";
   const from = el("div", "rpFrom"), who = el("div", "who"), name = el("div", "name", m.sender_name || m.sender);
   from.appendChild(avatar(m.sender_name || m.sender, m.sender));
@@ -1819,7 +1871,8 @@ function renderDetail(m) {
   }
 
   w.appendChild(mailFrame(m));
-  w.appendChild(threadBlock(m));
+  w.appendChild(convAfter);
+  threadInto(m, convBefore, convAfter, convCount);
 
   const tools = el("div", "actions");
   const again = el("button", "btn small", "Классифицировать заново");

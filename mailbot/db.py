@@ -482,7 +482,7 @@ class Database:
             total = c.execute("SELECT COUNT(*) n FROM emails" + clause, args).fetchone()["n"]
             rows = c.execute(
                 "SELECT id, subject, sender, sender_name, received_at, has_attachments, status, category, confidence, "
-                "folder, is_read, conversation_id, flag, "
+                "folder, is_read, conversation_id, flag, recipients, "
                 "summary, jira_key, recommend_action, error, attempts, invite, invite_decision, invite_state, "
                 "substr(replace(replace(body, char(10), ' '), char(13), ' '), 1, 160) AS preview, "
                 "(SELECT status FROM runs r WHERE r.email_id = emails.id ORDER BY r.id DESC LIMIT 1) AS run_status "
