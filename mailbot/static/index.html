@@ -656,10 +656,23 @@ nav button.on .n.u { background: none; color: var(--accent); }
 .conv { margin: 12px 0 4px; contain: inline-size; }  /* длинные строки цепочки не раздвигают панель */
 .conv.after { margin-top: 14px; }
 .convCount { align-self: center; flex-shrink: 0; font-size: 12.5px; color: var(--muted); background: var(--soft); border-radius: 10px; padding: 2px 9px; }
+.conv .tItem { background: none; border: 0; border-top: 1px solid var(--border); border-radius: 0; margin: 0; overflow: visible; }
+.conv .tHead { padding: 12px 6px; border-radius: 8px; gap: 12px; }
+.conv .tHead .ava { width: 40px; height: 40px; font-size: 14px; }
+.conv .tHead .tFrom { font-size: 15px; font-weight: 500; }
+.conv .tHead .tPrev { font-size: 13px; margin-top: 2px; }
+.conv .tItem.open .tHead { padding-bottom: 4px; }
+.conv .tBody { padding: 0 6px 12px 58px; }
+.conv .tBody .mailBody { margin: 6px 0; border-radius: 10px; border: 1px solid var(--border); box-shadow: none; }
+.conv .tTo { border: 0; padding: 0; }
+.conv .tBody .actions { padding: 6px 0 0; }
+.conv.after { border-bottom: 1px solid var(--border); }
 .tItem.unread .tFrom { color: var(--accent); }
+.quoteBtn { display: block; margin: 0 0 12px 16px; border: 1px solid #d0d4da; background: #f3f4f6; color: #555; border-radius: 6px; padding: 0 8px; font-size: 12px; letter-spacing: 1px; line-height: 16px; cursor: pointer; }
+.quoteBtn:hover, .quoteBtn.on { color: #1a7f45; border-color: #1a7f45; }
 .tItem.open .tPrev { display: none; }
 .tTo { font-size: 12.5px; color: var(--muted); padding: 6px 12px 8px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
-.tMore { display: block; width: 100%; border: 1px dashed var(--border); background: none; color: var(--muted); border-radius: 12px; padding: 7px; margin-bottom: 8px; cursor: pointer; font-size: 13px; }
+.tMore { display: block; width: 100%; border: 0; border-top: 1px solid var(--border); background: none; color: var(--muted); padding: 10px; cursor: pointer; font-size: 13px; text-align: left; padding-left: 58px; }
 .tMore:hover { color: var(--accent); border-color: var(--accent); }
 .tItem { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 8px; overflow: hidden; }
 .tHead { display: flex; gap: 10px; align-items: center; padding: 9px 12px; cursor: pointer; }
@@ -1602,8 +1615,9 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---------- переписка в карточке письма ----------
-// Письма цепочки идут по порядку, как в чате: более ранние — свёрнутыми карточками над открытым письмом,
-// более поздние (если открыли не последнее) — под ним. Карточка разворачивается на месте.
+// Как в Outlook: сверху открытое (обычно последнее) письмо, под ним прошлые письма свёрнутыми строками —
+// кто написал и начало текста. Строка разворачивается на месте. Более новые письма, если открыли не последнее,
+// стоят свёрнутыми над ним.
 const threadCache = new Map(), threadOpen = new Set(), threadReadDone = new Set();
 const CONV_SHOWN = 3;  // сколько ранних писем видно сразу, остальные — по кнопке
 function convCard(t) {
@@ -1625,7 +1639,9 @@ function convCard(t) {
     open.onclick = () => select(t.id);
     a.appendChild(open);
     if (t.recipients) body.appendChild(el("div", "tTo", "Кому: " + t.recipients));
-    body.append(mailFrame(t), a);
+    const atts = el("div");
+    body.append(mailFrame(t), atts, a);
+    if (t.has_attachments) api("GET", "/api/emails/" + t.id).then((full) => { const s = attStrip(full); if (s) atts.appendChild(s); }).catch(() => {});
   };
   const toggle = () => {
     const show = body.hidden;
@@ -1644,16 +1660,16 @@ function threadInto(m, before, after, count) {
   const draw = (rows) => {
     if (rows.length < 2 || !rows.some((t) => t.id === m.id)) return;
     count.textContent = rows.length + " " + plural(rows.length, "письмо", "письма", "писем"); count.hidden = false;
-    const i = rows.findIndex((t) => t.id === m.id), older = rows.slice(0, i), newer = rows.slice(i + 1);
+    const i = rows.findIndex((t) => t.id === m.id), older = rows.slice(0, i).reverse(), newer = rows.slice(i + 1).reverse();
     before.textContent = ""; after.textContent = "";
-    const hiddenOld = older.length > CONV_SHOWN + 1 ? older.slice(0, older.length - CONV_SHOWN) : [];
-    if (hiddenOld.length) {
-      const more = el("button", "tMore", "Ещё " + hiddenOld.length + " " + plural(hiddenOld.length, "письмо", "письма", "писем") + " раньше");
-      more.onclick = () => { more.replaceWith(...hiddenOld.map(convCard)); };
-      before.appendChild(more);
+    newer.forEach((t) => before.appendChild(convCard(t)));
+    const shown = older.length > CONV_SHOWN + 1 ? older.slice(0, CONV_SHOWN) : older, rest = older.slice(shown.length);
+    shown.forEach((t) => after.appendChild(convCard(t)));
+    if (rest.length) {
+      const more = el("button", "tMore", "Ещё " + rest.length + " " + plural(rest.length, "письмо", "письма", "писем") + " раньше");
+      more.onclick = () => { more.replaceWith(...rest.map(convCard)); };
+      after.appendChild(more);
     }
-    older.slice(hiddenOld.length).forEach((t) => before.appendChild(convCard(t)));
-    newer.forEach((t) => after.appendChild(convCard(t)));
     before.hidden = !before.childNodes.length; after.hidden = !after.childNodes.length;
     $("detailWrap").classList.toggle("hasConv", !before.hidden);
     // открыли цепочку — непрочитанные письма той же папки считаем прочитанными, как в Outlook
@@ -1960,16 +1976,63 @@ function mailFrame(m) {
     }
     f.srcdoc = r.html;
   };
+  const quote = el("button", "quoteBtn", "•••"); quote.hidden = true;
+  quote.title = "Показать переписку ниже"; quote.setAttribute("aria-label", "Показать цитату прошлых писем");
+  box.appendChild(quote);
   f.onload = () => {
     const d = f.contentDocument;
     if (!d || !d.documentElement) return;
-    const fit = () => { f.style.height = Math.max(120, d.documentElement.scrollHeight) + "px"; };
+    // высота по содержимому body: у html она не меньше самой рамки, и рамка не смогла бы уменьшиться
+    const fit = () => {
+      const b = d.body, cs = d.defaultView.getComputedStyle(b);
+      f.style.height = Math.max(48, Math.ceil(b.scrollHeight + parseFloat(cs.marginTop) + parseFloat(cs.marginBottom))) + "px";
+    };
+    const hidden = hideQuote(d);
+    quote.hidden = !hidden.length;
+    quote.onclick = () => {
+      const show = quote.classList.toggle("on");
+      hidden.forEach((n) => { n.style.display = show ? n.dataset.gmDisplay : "none"; });
+      quote.title = show ? "Скрыть переписку ниже" : "Показать переписку ниже";
+      fit();
+    };
     fit();
     d.querySelectorAll("img").forEach((i) => i.addEventListener("load", fit));
     if (window.ResizeObserver) new ResizeObserver(fit).observe(d.body);
   };
   load(remoteAllowed.has(m.id));
   return box;
+}
+// Цитата прошлых писем в ответе: прячем, как Outlook, и показываем по «•••».
+// Ищем начало цитаты (блок «От: … Отправлено: …», gmail_quote, blockquote) и скрываем его и всё, что ниже.
+const QUOTE_SEL = "#divRplyFwdMsg, #appendonsend, .gmail_quote, blockquote[type=cite], #mail-editor-reference-message-container, .moz-cite-prefix, .OutlookMessageHeader";
+const QUOTE_HEAD = /^\s*(From|От|Från|Von)\s*:[\s\S]{0,400}?(Sent|Отправлено|Date|Дата|Gesendet)\s*:/i;
+const QUOTE_LINE = /^\s*-{2,}\s*(Original Message|Исходное сообщение|Пересылаемое сообщение|Forwarded message)/i;
+function hideQuote(d) {
+  const body = d.body;
+  if (!body) return [];
+  let mark = body.querySelector(QUOTE_SEL);
+  if (!mark) {
+    for (const e of body.querySelectorAll("div, p, hr, table")) {
+      if (e.tagName === "HR") {
+        const next = e.nextElementSibling;
+        if (next && (QUOTE_HEAD.test(next.textContent) || QUOTE_LINE.test(next.textContent))) { mark = e; break; }
+        continue;
+      }
+      const t = e.textContent;
+      if (t.length < 800 && (QUOTE_HEAD.test(t) || QUOTE_LINE.test(t)) && !e.querySelector("div, p, table")) { mark = e; break; }
+      const style = e.getAttribute("style") || "";
+      if (/border-top:\s*solid\s*#(E1E1E1|B5C4DF)/i.test(style) && QUOTE_HEAD.test(t)) { mark = e; break; }
+    }
+  }
+  if (!mark) return [];
+  const nodes = [];
+  for (let n = mark; n && n !== body; n = n.parentElement) {
+    for (let s = n === mark ? n : n.nextElementSibling; s; s = s.nextElementSibling) nodes.push(s);
+  }
+  nodes.forEach((n) => { n.dataset.gmDisplay = n.style.display || ""; n.style.display = "none"; });
+  // пересылка или письмо без своего текста: прятать нечего, показываем как есть
+  if (body.innerText.replace(/\s+/g, "").length < 2) { nodes.forEach((n) => { n.style.display = n.dataset.gmDisplay; }); return []; }
+  return nodes;
 }
 const attUrl = (eid, i, inline) => "/api/emails/" + eid + "/attachments/" + i + (inline ? "?inline=1" : "");
 const PREVIEW = /^(image\/(png|jpeg|gif|webp|bmp)|application\/pdf|text\/plain)$/;

@@ -766,6 +766,14 @@ class FakeSource(FakeOffice):
         conv = next((x["conversation_id"] for x in self.box.values() if x.get("conversation_topic") == topic), None)
         m.update(folder="f-inbox", is_read=False, conversation_id=conv or "conv-{}".format(self.sent),
                  conversation_topic=topic)
+        if conv and subject.startswith("RE: "):  # ответ как из Outlook: свой текст и цитата прошлого письма ниже
+            prev = next(x for x in self.box.values() if x.get("conversation_id") == conv)
+            m["body_html"] = (
+                "<div>{}</div><div id=\"appendonsend\"></div><hr style=\"display:inline-block;width:98%\">"
+                "<div id=\"divRplyFwdMsg\"><b>От:</b> {} &lt;{}&gt;<br><b>Отправлено:</b> {}<br>"
+                "<b>Кому:</b> me@example.com<br><b>Тема:</b> {}</div><div><p>{}</p></div>").format(
+                    body, prev["sender_name"], prev["sender"], prev["received_at"][:16].replace("T", " "),
+                    prev["subject"], prev["body"])
         if self.sent == 1:
             self._release_extras(m)
             m.update(conversation_id="conv-release", conversation_topic="ABC-123")
