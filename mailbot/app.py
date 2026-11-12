@@ -1,6 +1,7 @@
 """Веб-приложение: вход по паролю, письма с классификацией, настройки и запуск скиллов."""
 from __future__ import annotations
 
+import gzip
 import hmac
 import json
 import os
@@ -149,6 +150,28 @@ def route(method: str, pattern: str, public: bool = False):
     return deco
 
 
+GZIP_MIN = 1400  # меньше одного сетевого пакета сжимать незачем
+_page_cache: dict = {}
+_page_lock = threading.Lock()
+
+
+def _page():
+    """Страница со вставленными скриптами и её сжатая копия. Собираем заново, только если файлы поменялись."""
+    paths = [STATIC] + list(STATIC_EXTRA)
+    key = tuple(os.stat(p).st_mtime_ns for p in paths)
+    with _page_lock:
+        if _page_cache.get("key") != key:
+            with open(STATIC, "rb") as f:
+                body = f.read()
+            extra = b""
+            for path in STATIC_EXTRA:
+                with open(path, "rb") as f:
+                    extra += b"<script>\n" + f.read().replace(b"</script", b"<\\/script") + b"\n</script>\n"
+            body = body.replace(b"</body>", extra + b"</body>", 1)
+            _page_cache.update(key=key, body=body, packed=gzip.compress(body, compresslevel=9))
+        return _page_cache["body"], _page_cache["packed"]
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "mailbot/1.0"
     protocol_version = "HTTP/1.1"
@@ -158,16 +181,39 @@ class Handler(BaseHTTPRequestHandler):
         print("[{}] {}".format(time.strftime("%H:%M:%S"), fmt % args), flush=True)
 
     # --- утилиты ----------------------------------------------------------
+    def _compress(self, body: bytes, packed: Optional[bytes] = None) -> bytes:
+        """Сжатие gzip, если браузер его принимает, а ответ не крошечный. Заголовки — до Content-Length."""
+        self.send_header("Vary", "Accept-Encoding")
+        if len(body) < GZIP_MIN or "gzip" not in (self.headers.get("Accept-Encoding") or "").lower():
+            return body
+        self.send_header("Content-Encoding", "gzip")
+        return packed if packed is not None else gzip.compress(body, compresslevel=5)
+
     def _json(self, status: int, obj, cookie: Optional[str] = None):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        body = self._compress(body)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         if cookie is not None:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
+
+    def _qint(self, name: str, default: Optional[int] = None, lo: Optional[int] = None, hi: Optional[int] = None) -> int:
+        """Целое из адреса запроса, прижатое к [lo, hi]. Нет значения — default; нет и его — ошибка 400."""
+        raw = self.query.get(name, "").strip()
+        if not raw and default is not None:
+            value = default
+        else:
+            try:
+                value = int(raw)
+            except ValueError:
+                raise HttpError(400, "{} — целое число".format(name))
+        if lo is not None:
+            value = max(lo, value)
+        return min(hi, value) if hi is not None else value
 
     def _body(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
@@ -240,15 +286,10 @@ class Handler(BaseHTTPRequestHandler):
     # === вход ============================================================
     @route("GET", "/", public=True)
     def index(self):
-        with open(STATIC, "rb") as f:
-            body = f.read()
-        extra = b""
-        for path in STATIC_EXTRA:
-            with open(path, "rb") as f:
-                extra += b"<script>\n" + f.read().replace(b"</script", b"<\\/script") + b"\n</script>\n"
-        body = body.replace(b"</body>", extra + b"</body>", 1)
+        body, packed = _page()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        body = self._compress(body, packed)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Content-Security-Policy", CSP)
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -304,12 +345,7 @@ class Handler(BaseHTTPRequestHandler):
         kind = q.get("kind", "file")
         if kind not in media.KINDS:
             raise HttpError(400, "kind: photo, file, archive или link")
-        try:
-            limit = max(1, min(int(q.get("limit", 60)), 200))
-            offset = max(0, int(q.get("offset", 0)))
-            email_id = int(q.get("email") or 0)
-        except ValueError:
-            raise HttpError(400, "limit, offset и email — целые числа")
+        limit, offset, email_id = self._qint("limit", 60, 1, 200), self._qint("offset", 0, 0), self._qint("email", 0, 0)
         db = self.ctx.db
         excluded = db.settings().get("media_exclude_domains") or []
         data = db.list_media(kind, q.get("q", "").strip()[:200], q.get("sender", "").strip()[:320],
@@ -322,20 +358,13 @@ class Handler(BaseHTTPRequestHandler):
     @route("GET", "/api/media/copies")
     def media_copies(self):
         """В каких письмах встречается тот же файл или ссылка."""
-        try:
-            media_id = int(self.query.get("id", ""))
-        except ValueError:
-            raise HttpError(400, "id — целое число")
+        media_id = self._qint("id")
         self._json(200, {"copies": self.ctx.db.media_copies(media_id, self.ctx.worker.hidden_folders())})
 
     @route("GET", "/api/emails")
     def emails(self):
         q = self.query
-        try:
-            limit = max(1, min(int(q.get("limit", 100)), 500))
-            offset = max(0, int(q.get("offset", 0)))
-        except ValueError:
-            raise HttpError(400, "limit и offset — целые числа")
+        limit, offset = self._qint("limit", 100, 1, 500), self._qint("offset", 0, 0)
         worker = self.ctx.worker
         inbox = worker.inbox_id or "inbox"
         folder = q.get("folder")
@@ -435,11 +464,7 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", "/api/notify")
     def notify(self):
-        try:
-            after = int(self.query.get("after", 0))
-        except ValueError:
-            raise HttpError(400, "after — число")
-        self._json(200, self.ctx.worker.new_mail(after))
+        self._json(200, self.ctx.worker.new_mail(self._qint("after", 0)))
 
     # === подписи =========================================================
     @route("GET", "/api/signatures")
@@ -588,7 +613,12 @@ class Handler(BaseHTTPRequestHandler):
     @route("GET", "/api/emails/{eid}/attachments/{idx}")
     def email_attachment(self, eid, idx):
         email = self._email_or_404(eid)
+        size = self.query.get("size")
         try:
+            if size in ("thumb", "view"):  # сжатая копия картинки: плитки, значки и просмотр
+                meta, data, ctype = self.ctx.worker.image(email, int(idx), size)
+                if ctype.startswith("image/") and ctype in PREVIEW_TYPES:
+                    return self._image(data, ctype)
             meta, data = self.ctx.worker.attachment(email, int(idx))
         except ValueError as e:
             raise HttpError(404, str(e))
@@ -597,6 +627,17 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             raise HttpError(502, "Не удалось получить вложение: {}: {}".format(type(e).__name__, e))
         self._file(meta, data)
+
+    def _image(self, data: bytes, ctype: str):
+        """Картинка для показа на странице. Вложение письма не меняется — браузер может держать её у себя долго."""
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "private, max-age=604800")
+        self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _file(self, meta: dict, data: bytes):
         """Вложение: в браузере открываются только безопасные типы, остальное скачивается."""
@@ -740,9 +781,9 @@ class Handler(BaseHTTPRequestHandler):
     def calendar(self):
         try:
             first = date.fromisoformat(self.query.get("start") or date.today().isoformat())
-            days = max(1, min(int(self.query.get("days", 7)), MAX_CALENDAR_DAYS))
         except ValueError:
-            raise HttpError(400, "start — дата ГГГГ-ММ-ДД, days — число дней")
+            raise HttpError(400, "start — дата ГГГГ-ММ-ДД")
+        days = self._qint("days", 7, 1, MAX_CALENDAR_DAYS)
         begin = datetime.combine(first, dtime(0), local_tz())
         try:
             events = self.ctx.worker.events(begin, begin + timedelta(days=days))
@@ -825,10 +866,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             emails = [e.strip() for e in self.query.get("emails", "").split(",") if e.strip()]
             first = _local_dt(self.query.get("start") or date.today().isoformat())
-            days = max(1, min(int(self.query.get("days", 1)), calendar_ops.MAX_FREEBUSY_DAYS))
-            duration = max(5, min(int(self.query.get("duration", 30)), 24 * 60))
         except ValueError:
-            raise HttpError(400, "start — дата, days и duration — числа")
+            raise HttpError(400, "start — дата")
+        days = self._qint("days", 1, 1, calendar_ops.MAX_FREEBUSY_DAYS)
+        duration = self._qint("duration", 30, 5, 24 * 60)
         bad = [e for e in emails if not EMAIL_RE.match(e)]
         if bad or len(emails) > calendar_ops.MAX_FREEBUSY_PEOPLE:
             raise HttpError(400, "Неверные адреса или их слишком много")

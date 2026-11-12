@@ -19,7 +19,7 @@ from .meetings import MEETING_CATEGORY, ACTION_TEXT, ACTIONS, AUTO_MIN_CONFIDENC
     search_window
 from .gigacode_client import GigaCodeClient
 from .health import hint_for, timed
-from . import calendar_ops, compose, media
+from . import calendar_ops, compose, media, thumbs
 from .html_view import clean_fragment, render as render_html, text_document
 from .mail_source import MailError, fetch_since, sender_allowed, sender_matches
 from .vault import Vault
@@ -43,6 +43,7 @@ INLINE_IMAGE_BYTES = 5 * 1024 * 1024
 class Worker:
     def __init__(self, db: Database, vault: Vault, source_factory: Optional[Callable] = None):
         self.db = db
+        self.thumbs = thumbs.Store(os.path.join(os.path.dirname(os.path.abspath(db.path)), "thumbs"))
         self.vault = vault
         self.fake_source = source_factory is not None
         self.source_factory = source_factory or self._exchange_source
@@ -395,6 +396,22 @@ class Worker:
                 self._att_cache.popitem(last=False)
         return meta, data
 
+    def image(self, email: dict, index: int, size: str) -> tuple:
+        """(описание, байты, тип) картинки-вложения в нужном размере: thumb — превью, view — для просмотра.
+        Не картинка, нет Pillow или сжимать незачем — оригинал."""
+        items = email.get("attachments") or []
+        if not 0 <= index < len(items):
+            raise ValueError("Нет такого вложения")
+        meta = items[index]
+        ctype = (meta.get("content_type") or "").split(";")[0].strip().lower()
+        if thumbs.AVAILABLE and ctype.startswith("image/") and "svg" not in ctype and email.get("item_id"):
+            key = "{}|{}".format(email["item_id"], meta.get("id"))
+            small, _ = self.thumbs.get(key, size, lambda: self.attachment(email, index)[1])
+            if small:
+                return meta, small, thumbs.mime()
+        meta, data = self.attachment(email, index)
+        return meta, data, ctype
+
     def email_document(self, email: dict, allow_remote: bool) -> tuple:
         """HTML для iframe и число скрытых картинок. Встроенные картинки — data: из вложений."""
         if not email.get("body_html"):
@@ -403,11 +420,11 @@ class Worker:
         for i, a in enumerate(email.get("attachments") or []):
             if a.get("content_id") and a.get("content_type", "").startswith("image/") and "svg" not in a["content_type"] \
                     and a.get("size", 0) <= INLINE_IMAGE_BYTES:
-                try:
-                    _, data = self.attachment(email, i)
+                try:  # большие картинки в тексте (вставленные скриншоты, фото) — сжатой копией
+                    _, data, ctype = self.image(email, i, "view")
                 except Exception:  # noqa: BLE001 — без картинки письмо всё равно показываем
                     continue
-                inline[a["content_id"]] = "data:{};base64,{}".format(a["content_type"], base64.b64encode(data).decode())
+                inline[a["content_id"]] = "data:{};base64,{}".format(ctype, base64.b64encode(data).decode())
         return render_html(email["body_html"], inline, allow_remote)
 
     # --- ящик ---------------------------------------------------------------

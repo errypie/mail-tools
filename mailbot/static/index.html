@@ -124,6 +124,7 @@ nav hr { border: 0; border-top: 1px solid var(--border); margin: 8px 4px; }
 .attIcon { width: 34px; height: 40px; border-radius: 6px; display: grid; place-items: end center; padding-bottom: 5px; font-size: 9px; font-weight: 700; color: #fff; flex-shrink: 0; background: #8a8f98; position: relative; }
 .attIcon::after { content: ""; position: absolute; top: 0; right: 0; border-style: solid; border-width: 0 9px 9px 0; border-color: transparent var(--panel) rgba(255, 255, 255, .45) transparent; }
 .attIcon.pdf { background: #d13438; } .attIcon.xls { background: #107c41; } .attIcon.doc { background: #185abd; }
+.attThumb { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; flex-shrink: 0; background: var(--code); }
 .attIcon.ppt { background: #c43e1c; } .attIcon.img { background: #8764b8; } .attIcon.zip { background: #986f0b; } .attIcon.txt { background: #5c6670; }
 .attInfo { flex: 1; min-width: 0; }
 .attName { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1053,6 +1054,18 @@ makeSplit($("splitCats"), document.querySelector("#catsPage .ct-side"), { key: "
 
 // ---------- вход ----------
 let setupMode = false, timer = null;
+// Опрос списка, письма и статуса: раз в 4 секунды, а в свёрнутой вкладке — раз в минуту.
+// Вернулись на вкладку — обновляем сразу. Уведомления о новой почте идут своим опросом (office.js).
+const POLL_MS = 4000, POLL_HIDDEN_MS = 60000;
+let lastPoll = 0;
+function pollTick(force) {
+  if (!force && document.hidden && Date.now() - lastPoll < POLL_HIDDEN_MS) return;
+  lastPoll = Date.now();
+  refresh(); refreshDetail(); refreshStatus();
+}
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && timer && Date.now() - lastPoll > POLL_MS) pollTick(true);
+});
 function showAuth() {
   clearInterval(timer); timer = null;
   $("app").hidden = true; $("settings").hidden = true; $("statusPage").hidden = true; $("catsPage").hidden = true; closeViewer(); $("auth").hidden = false;
@@ -1088,7 +1101,7 @@ function showApp() {
   refresh();
   refreshStatus();
   if (!SOLO_ID) startReminders();
-  if (!timer) timer = setInterval(() => { refresh(); refreshDetail(); refreshStatus(); }, 4000);
+  if (!timer) timer = setInterval(() => pollTick(false), POLL_MS);
   if (!SOLO_ID && location.hash === "#categories") openCats().catch((e) => alert(e.message));
   if (!SOLO_ID && ["#calendar", "#people", "#tasks", "#media"].includes(location.hash)) showView(location.hash.slice(1));
   if (!SOLO_ID) startOffice();
@@ -1955,57 +1968,71 @@ async function refreshDetail() {
 
 // ---------- тело письма и вложения ----------
 const frameCache = new Map(), remoteAllowed = new Set(), agentOpen = new Set();
-function mailFrame(m) {
-  const box = el("div", "mailBody"), bar = el("div", "imgBar"), f = document.createElement("iframe");
+// Рамка для чужого HTML (письмо, описание встречи): песочница, высота по содержимому, полоса «Картинки скрыты».
+// opts: title, cls — доп. класс, quotes — прятать цитату прошлых писем за «•••».
+// show(html, blocked, note, onRemote): blocked — сколько картинок из интернета скрыто, onRemote(btn) — показать их.
+function docFrame(opts) {
+  const box = el("div", "mailBody" + (opts.cls ? " " + opts.cls : "")), bar = el("div", "imgBar"), f = document.createElement("iframe");
   bar.hidden = true;
-  f.className = "mailFrame"; f.title = "Текст письма";
+  f.className = "mailFrame"; f.title = opts.title;
   // без allow-scripts: скрипты письма не выполняются, а same-origin нужен только чтобы подогнать высоту
   f.setAttribute("sandbox", "allow-same-origin allow-popups allow-popups-to-escape-sandbox");
   box.append(bar, f);
-  const load = async (remote) => {
-    const key = m.id + ":" + (remote ? 1 : 0);
-    let r = frameCache.get(key);
-    if (!r) {
-      try { r = await api("GET", "/api/emails/" + m.id + "/html" + (remote ? "?remote=1" : "")); }
-      catch (e) { box.replaceChildren(el("div", "card error", "Не удалось показать письмо: " + e.message)); return; }
-      frameCache.set(key, r);
-      if (frameCache.size > 40) frameCache.delete(frameCache.keys().next().value);
-    }
-    bar.hidden = !r.blocked || remote;
-    bar.textContent = "";
-    if (!bar.hidden) {
-      bar.appendChild(el("span", "", "Картинки из интернета скрыты (" + r.blocked + "): по ним отправитель узнаёт, что письмо открыли."));
-      const show = el("button", "btn small", "Показать картинки");
-      show.onclick = () => { remoteAllowed.add(m.id); load(true); };
-      bar.appendChild(show);
-    }
-    f.srcdoc = r.html;
-  };
   const quote = el("button", "quoteBtn", "•••"); quote.hidden = true;
-  quote.title = "Показать переписку ниже"; quote.setAttribute("aria-label", "Показать цитату прошлых писем");
-  box.appendChild(quote);
+  if (opts.quotes) {
+    quote.title = "Показать переписку ниже"; quote.setAttribute("aria-label", "Показать цитату прошлых писем");
+    box.appendChild(quote);
+  }
   f.onload = () => {
     const d = f.contentDocument;
-    if (!d || !d.documentElement) return;
+    if (!d || !d.documentElement || !d.body) return;
     // высота по содержимому body: у html она не меньше самой рамки, и рамка не смогла бы уменьшиться
     const fit = () => {
       const b = d.body, cs = d.defaultView.getComputedStyle(b);
       f.style.height = Math.max(48, Math.ceil(b.scrollHeight + parseFloat(cs.marginTop) + parseFloat(cs.marginBottom))) + "px";
     };
-    const hidden = hideQuote(d);
-    quote.hidden = !hidden.length;
-    quote.onclick = () => {
-      const show = quote.classList.toggle("on");
-      hidden.forEach((n) => { n.style.display = show ? n.dataset.gmDisplay : "none"; });
-      quote.title = show ? "Скрыть переписку ниже" : "Показать переписку ниже";
-      fit();
-    };
+    if (opts.quotes) {
+      const hidden = hideQuote(d);
+      quote.hidden = !hidden.length; quote.classList.remove("on");
+      quote.onclick = () => {
+        const show = quote.classList.toggle("on");
+        hidden.forEach((n) => { n.style.display = show ? n.dataset.gmDisplay : "none"; });
+        quote.title = show ? "Скрыть переписку ниже" : "Показать переписку ниже";
+        fit();
+      };
+    }
     fit();
     d.querySelectorAll("img").forEach((i) => i.addEventListener("load", fit));
     if (window.ResizeObserver) new ResizeObserver(fit).observe(d.body);
   };
+  const show = (html, blocked, note, onRemote) => {
+    bar.textContent = ""; bar.hidden = !blocked;
+    if (blocked) {
+      bar.appendChild(el("span", "", "Картинки из интернета скрыты (" + blocked + ")" + (note ? ": " + note : ".")));
+      const b = el("button", "btn small", "Показать картинки");
+      b.onclick = () => onRemote(b);
+      bar.appendChild(b);
+    }
+    f.srcdoc = html;
+  };
+  return { box, show };
+}
+function mailFrame(m) {
+  const fr = docFrame({ title: "Текст письма", quotes: true });
+  const load = async (remote) => {
+    const key = m.id + ":" + (remote ? 1 : 0);
+    let r = frameCache.get(key);
+    if (!r) {
+      try { r = await api("GET", "/api/emails/" + m.id + "/html" + (remote ? "?remote=1" : "")); }
+      catch (e) { fr.box.replaceChildren(el("div", "card error", "Не удалось показать письмо: " + e.message)); return; }
+      frameCache.set(key, r);
+      if (frameCache.size > 40) frameCache.delete(frameCache.keys().next().value);
+    }
+    fr.show(r.html, remote ? 0 : r.blocked, "по ним отправитель узнаёт, что письмо открыли",
+      () => { remoteAllowed.add(m.id); load(true); });
+  };
   load(remoteAllowed.has(m.id));
-  return box;
+  return fr.box;
 }
 // Цитата прошлых писем в ответе: прячем, как Outlook, и показываем по «•••».
 // Ищем начало цитаты (блок «От: … Отправлено: …», gmail_quote, blockquote) и скрываем его и всё, что ниже.
@@ -2039,6 +2066,8 @@ function hideQuote(d) {
   if (body.innerText.replace(/\s+/g, "").length < 2) { nodes.forEach((n) => { n.style.display = n.dataset.gmDisplay; }); return []; }
   return nodes;
 }
+// сжатая копия картинки: thumb — превью (плитки, значки), view — для просмотра; оригинал — attUrl
+const imgUrl = (eid, i, size) => "/api/emails/" + eid + "/attachments/" + i + "?size=" + size;
 const attUrl = (eid, i, inline) => "/api/emails/" + eid + "/attachments/" + i + (inline ? "?inline=1" : "");
 const PREVIEW = /^(image\/(png|jpeg|gif|webp|bmp)|application\/pdf|text\/plain)$/;
 function attKind(a) {
@@ -2065,7 +2094,13 @@ function attStrip(m) {
   list.forEach(([a, i]) => {
     const chip = el("div", "att" + (a.file === false ? " off" : "")), info = el("div", "attInfo");
     const ext = (a.name.includes(".") ? a.name.split(".").pop() : "").slice(0, 4).toUpperCase();
-    chip.appendChild(el("span", "attIcon " + attKind(a), ext || "FILE"));
+    const icon = el("span", "attIcon " + attKind(a), ext || "FILE");
+    chip.appendChild(icon);
+    if (a.file !== false && /^image\/(png|jpeg|gif|webp|bmp)$/.test(a.content_type || "")) {  // фото — маленьким превью
+      const img = el("img", "attThumb"); img.alt = ""; img.decoding = "async";  // без lazy: до загрузки её нет на странице
+      img.onload = () => icon.replaceWith(img);
+      img.src = imgUrl(m.id, i, "thumb");
+    }
     info.append(el("div", "attName", a.name), el("div", "attSize", a.file === false ? "откройте в Outlook" : fmtSize(a.size)));
     chip.appendChild(info);
     chip.title = a.name;
@@ -2088,7 +2123,12 @@ async function openViewer(m, a, i) {
   $("vName").textContent = a.name + " · " + fmtSize(a.size);
   $("vDownload").href = attUrl(m.id, i, false); $("vDownload").setAttribute("download", a.name);
   $("viewer").hidden = false;
-  if (type.startsWith("image/")) { const img = el("img"); img.src = attUrl(m.id, i, true); img.alt = a.name; body.appendChild(img); }
+  if (type.startsWith("image/")) {  // сначала сжатая копия — быстро; оригинал — кнопкой «Скачать»
+    const img = el("img"); img.alt = a.name; img.decoding = "async";
+    img.onerror = () => { img.onerror = null; img.src = attUrl(m.id, i, true); };
+    img.src = imgUrl(m.id, i, "view");
+    body.appendChild(img);
+  }
   else if (type === "application/pdf") { const f = el("iframe"); f.src = attUrl(m.id, i, true); f.title = a.name; body.appendChild(f); }
   else {
     const pre = el("pre", "", "Загрузка…"); body.appendChild(pre);
@@ -3200,34 +3240,13 @@ function peopleBlock(people) {
 }
 // описание встречи в том же виде, что письмо: баннеры, таблицы, ссылки; картинки из интернета по кнопке
 function eventFrame(x) {
-  const box = el("div", "evDoc mailBody"), bar = el("div", "imgBar"), f = document.createElement("iframe");
-  f.className = "mailFrame"; f.title = "Описание встречи";
-  f.setAttribute("sandbox", "allow-same-origin allow-popups allow-popups-to-escape-sandbox");
-  const show = (doc, blocked) => {
-    bar.textContent = ""; bar.hidden = !blocked;
-    if (blocked) {
-      bar.appendChild(el("span", "", "Картинки из интернета скрыты (" + blocked + ")."));
-      const b = el("button", "btn small", "Показать картинки");
-      b.onclick = async () => {
-        b.disabled = true;
-        try { const r = await api("GET", "/api/calendar/event?remote=1&id=" + encodeURIComponent(x.id)); show(r.doc, 0); }
-        catch (e) { alert(e.message); b.disabled = false; }
-      };
-      bar.appendChild(b);
-    }
-    f.srcdoc = doc;
-  };
-  f.onload = () => {
-    const d = f.contentDocument;
-    if (!d || !d.documentElement) return;
-    const fit = () => { f.style.height = Math.max(120, d.documentElement.scrollHeight) + "px"; };
-    fit();
-    d.querySelectorAll("img").forEach((i) => i.addEventListener("load", fit));
-    if (window.ResizeObserver) new ResizeObserver(fit).observe(d.body);
-  };
-  box.append(bar, f);
-  show(x.doc, x.blocked);
-  return box;
+  const fr = docFrame({ title: "Описание встречи", cls: "evDoc" });
+  fr.show(x.doc, x.blocked, "", async (b) => {
+    b.disabled = true;
+    try { const r = await api("GET", "/api/calendar/event?remote=1&id=" + encodeURIComponent(x.id)); fr.show(r.doc, 0); }
+    catch (e) { alert(e.message); b.disabled = false; }
+  });
+  return fr.box;
 }
 // письма по встрече: приглашение, ответы участников, обсуждение
 const DISC_KIND = { accept: "принял", decline: "отклонил", tentative: "под вопросом", cancel: "отмена", propose: "новое время", invite: "приглашение", reply: "ответ", mail: "письмо" };

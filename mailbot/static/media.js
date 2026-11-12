@@ -175,7 +175,7 @@ function photoTile(it) {
   const t = el("button", "mdTile"), img = el("img");
   t.title = it.name + (it.description ? "\n" + it.description : it.context ? "\n" + it.context : "") + "\n" + mdMeta(it);
   img.loading = "lazy"; img.decoding = "async"; img.alt = it.name;
-  img.src = attUrl(it.email_id, it.att_index, true);
+  img.src = imgUrl(it.email_id, it.att_index, "thumb");  // сжатое превью, а не оригинал на несколько мегабайт
   img.onerror = () => { img.remove(); t.prepend(el("span", "ph", it.name)); };
   t.append(img, el("span", "cap", it.sender_name || it.name));
   if (it.copies > 1) { const c = el("span", "cnt", "×" + it.copies); c.title = "Встречается в " + it.copies + " письмах"; t.appendChild(c); }
