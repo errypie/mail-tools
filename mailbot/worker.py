@@ -18,7 +18,7 @@ from .meetings import MEETING_CATEGORY, ACTION_TEXT, ACTIONS, AUTO_MIN_CONFIDENC
     search_window
 from .gigacode_client import GigaCodeClient
 from .health import hint_for, timed
-from . import calendar_ops, compose
+from . import calendar_ops, compose, media
 from .html_view import clean_fragment, render as render_html, text_document
 from .mail_source import MailError, fetch_since, sender_allowed
 from .vault import Vault
@@ -30,6 +30,10 @@ MAX_SKIPPED_IDS = 5000
 ATTACHMENT_CACHE_BYTES = 64 * 1024 * 1024
 ROOMS_TTL = 600  # с; список переговорных меняется редко
 FOLDERS_TTL = 20  # с; список папок с числом непрочитанных
+BACKFILL_PAGE = 50       # писем за один запрос к Exchange при подгрузке старой почты
+BACKFILL_PAUSE = 8       # с между запросами, чтобы не нагружать сервер
+BACKFILL_IDLE = 600      # с до проверки, не появилось ли новых папок, когда всё подгружено
+BACKFILL_SKIP = ("trash", "junk", "outbox", "drafts")
 CONTACTS_TTL = 60  # с; подсказки адресатов из истории пересчитываем не чаще
 OUTGOING_STYLE = 'font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1f1f1f'
 INLINE_IMAGE_BYTES = 5 * 1024 * 1024
@@ -43,6 +47,7 @@ class Worker:
         self.source_factory = source_factory or self._exchange_source
         self.source = None
         self.wake = threading.Event()
+        self.backfill_wake = threading.Event()
         self.status = {"last_poll_at": None, "last_ok_at": None, "last_error": None, "last_new": 0,
                        "skipped_total": 0, "classifier_error": None, "classifier_ok_at": None}
         self._skipped_ids = set()
@@ -58,6 +63,8 @@ class Worker:
 
     def start(self):
         threading.Thread(target=self._poll_loop, daemon=True).start()
+        threading.Thread(target=self._index_loop, daemon=True).start()
+        threading.Thread(target=self._backfill_loop, daemon=True).start()
         threading.Thread(target=self._classify_loop, daemon=True).start()
 
     def reset_source(self):
@@ -118,6 +125,75 @@ class Worker:
             self._skipped_ids.add(message_id)
             self.status["skipped_total"] += 1
 
+    # --- вложения, ссылки и поиск -------------------------------------------
+    def _index_loop(self):
+        """Разбирает новые письма для раздела «Вложения и ссылки» и полнотекстового поиска. Старые — порциями."""
+        while True:
+            try:
+                done = self.db.index_pending(200)
+            except Exception as e:  # noqa: BLE001 — сбой разбора не должен ронять сервис
+                self.status["index_error"] = "{}: {}".format(type(e).__name__, e)
+                done = 0
+            time.sleep(0.2 if done else 5)
+
+    def _backfill_loop(self):
+        """Старая почта с сервера порциями: для раздела «Вложения и ссылки» и поиска. Модель её не разбирает."""
+        self.backfill_wake.wait(30)  # сначала обычный опрос
+        while True:
+            delay = BACKFILL_IDLE
+            try:
+                if self.vault.unlocked and self.db.settings()["polling_enabled"]:
+                    delay = BACKFILL_PAUSE if self.backfill_step() else BACKFILL_IDLE
+                else:
+                    delay = 60
+            except MailError:
+                delay = 120  # не настроено или нет входа
+            except Exception as e:  # noqa: BLE001 — сбой подгрузки не мешает остальному
+                self.status.setdefault("backfill", {})["error"] = "{}: {}".format(type(e).__name__, e)[:300]
+                self.source = None
+                delay = 300
+            self.backfill_wake.wait(delay)
+            self.backfill_wake.clear()
+
+    def backfill_step(self) -> bool:
+        """Одна страница старых писем. True — работа ещё есть."""
+        days = int(self.db.settings().get("backfill_days") or 0)
+        st = self.db.state("backfill") or {}
+        if days <= 0:
+            self.status["backfill"] = {"enabled": False}
+            return False
+        if days > st.get("days", 0):  # глубину увеличили: пройдём папки дальше с того места, где остановились
+            for f in st.get("folders", {}).values():
+                f["done"] = False
+        st["days"] = days
+        folders = st.setdefault("folders", {})
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+        boxes = [f for f in self.folders() if f["kind"] not in BACKFILL_SKIP]
+        todo = next((f for f in boxes if not folders.get(f["id"], {}).get("done")), None)
+        report = {"enabled": True, "days": days, "folders": len(boxes), "loaded": st.get("loaded", 0), "error": None,
+                  "done_folders": sum(1 for f in boxes if folders.get(f["id"], {}).get("done"))}
+        if todo is None:
+            self.status["backfill"] = dict(report, running=False)
+            self.db.set_state("backfill", st)
+            return False
+        fs = folders.setdefault(todo["id"], {})
+        before = parse_iso(fs["before"]) if fs.get("before") else None
+        items, more = self.calendar().list_folder(todo["id"], before, BACKFILL_PAGE)
+        inbox, watermark = self.inbox_id, self.db.state("watermark")
+        with self._box_lock:
+            for m in items:
+                if m["received_at"] >= cutoff:
+                    m.setdefault("folder", todo["id"])
+                    self.db.upsert_mail(m, inbox, watermark)
+        oldest = min((m["received_at"] for m in items), default=None)
+        fs["before"] = oldest or fs.get("before")
+        fs["done"] = not more or not items or oldest < cutoff
+        st["loaded"] = st.get("loaded", 0) + len(items)
+        self.db.set_state("backfill", st)
+        self.status["backfill"] = dict(report, running=True, folder=todo["name"], loaded=st["loaded"], oldest=oldest,
+                                       done_folders=report["done_folders"] + int(fs["done"]))
+        return True
+
     # --- классификация ----------------------------------------------------
     def _classify_loop(self):
         while True:
@@ -131,10 +207,11 @@ class Worker:
         s = self.db.settings()
         categories = self.db.categories()
         self._refresh_invite(email, s)
-        prompt = self._prompt(email, categories, s)
+        items = media.prompt_items(email, s.get("media_exclude_domains") or [])
+        prompt = self._prompt(email, categories, s, items)
         try:
             res = self.gigacode()._json("POST", "/api/chat", {"prompt": prompt})
-            parsed = parse_response(res.get("response") or "", email, categories, s["entities"])
+            parsed = parse_response(res.get("response") or "", email, categories, s["entities"], items)
             self.db.save_classification(email["id"], parsed, res.get("sessionId"))
             self.status.update(classifier_error=None, classifier_ok_at=now_iso())
             self.db.resolve_service_errors("gigacode")
@@ -153,14 +230,15 @@ class Worker:
         if email.get("invite"):
             email = dict(email)
             self._refresh_invite(email, s, save=False)
-        res = self.gigacode()._json("POST", "/api/chat", {"prompt": self._prompt(email, categories, s)})
-        return dict(parse_response(res.get("response") or "", email, categories, s["entities"]), raw=res.get("response"),
+        items = media.prompt_items(email, s.get("media_exclude_domains") or [])
+        res = self.gigacode()._json("POST", "/api/chat", {"prompt": self._prompt(email, categories, s, items)})
+        return dict(parse_response(res.get("response") or "", email, categories, s["entities"], items), raw=res.get("response"),
                     sessionId=res.get("sessionId"))
 
     @staticmethod
-    def _prompt(email: dict, categories: list, s: dict) -> str:
+    def _prompt(email: dict, categories: list, s: dict, media_items=()) -> str:
         return build_prompt(email, categories, s["classify_prompt"], int(s["max_body_chars"]), s["entities"],
-                            s["invite_prompt"])
+                            s["invite_prompt"], media_items)
 
     # --- календарь --------------------------------------------------------
     def calendar(self):

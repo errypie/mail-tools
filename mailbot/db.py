@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Iterator, List, Optional, Sequence
 
+from .media import KINDS as MEDIA_KINDS, extract as extract_media, fts_query, item_key
 from .meetings import DEFAULT_INVITE_PROMPT, MEETING_CATEGORY
 
 SCHEMA = """
@@ -109,7 +110,27 @@ CREATE TABLE IF NOT EXISTS service_errors (
     count INTEGER NOT NULL DEFAULT 1,
     resolved_at TEXT
 );
+CREATE TABLE IF NOT EXISTS media (            -- вложения и ссылки писем для раздела «Вложения и ссылки»
+    id INTEGER PRIMARY KEY,
+    email_id INTEGER NOT NULL REFERENCES emails(id),
+    kind TEXT NOT NULL,                       -- photo | file | archive | link
+    att_index INTEGER,                        -- номер вложения в письме
+    name TEXT NOT NULL DEFAULT '',
+    url TEXT,
+    domain TEXT NOT NULL DEFAULT '',
+    size INTEGER NOT NULL DEFAULT 0,
+    content_type TEXT NOT NULL DEFAULT '',
+    context TEXT NOT NULL DEFAULT '',         -- фраза письма вокруг ссылки или про вложение
+    description TEXT NOT NULL DEFAULT '',     -- описание от модели при разборе письма
+    search TEXT NOT NULL DEFAULT '',          -- всё для поиска в нижнем регистре
+    received_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS media_kind ON media(kind, received_at DESC);
+CREATE INDEX IF NOT EXISTS media_email ON media(email_id);
+CREATE INDEX IF NOT EXISTS media_url ON media(url);
 """
+MEDIA_VERSION = 1   # поменять, если разбор писем изменится: всё переиндексируется
+FTS_BODY_CHARS = 30000
 
 DEFAULT_CLASSIFY_PROMPT = (
     "Ты разбираешь входящую почту. Определи категорию письма, напиши короткое "
@@ -157,6 +178,8 @@ DEFAULT_SETTINGS = {
     "work_end": "19:00",
     "free_slots_count": 3,
     "invite_prompt": DEFAULT_INVITE_PROMPT,
+    "media_exclude_domains": [],
+    "backfill_days": 180,
 }
 
 CATEGORY_ENV_FIELDS = ("cwd", "files", "include_dirs", "approval_mode", "permission", "model")
@@ -225,6 +248,19 @@ class Database:
                 c.execute("ALTER TABLE emails ADD COLUMN is_read INTEGER NOT NULL DEFAULT 1")
             if "flag" not in columns:  # 0 — нет, 1 — выполнено, 2 — с флажком, как в Exchange
                 c.execute("ALTER TABLE emails ADD COLUMN flag INTEGER NOT NULL DEFAULT 0")
+            if "media_notes" not in columns:  # описания вложений и ссылок от модели: {ключ: описание}
+                c.execute("ALTER TABLE emails ADD COLUMN media_notes TEXT")
+            if "description" not in {r["name"] for r in c.execute("PRAGMA table_info(media)")}:
+                c.execute("ALTER TABLE media ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+            if "media_v" not in columns:  # версия разбора вложений и ссылок, 0 — ещё не разобрано
+                c.execute("ALTER TABLE emails ADD COLUMN media_v INTEGER NOT NULL DEFAULT 0")
+            c.execute("CREATE INDEX IF NOT EXISTS emails_media ON emails(media_v)")
+            try:  # полнотекстовый поиск; в сборках SQLite без FTS5 ищем по-старому, через LIKE
+                c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS emails_fts USING fts5(subject, people, body, files, "
+                          "tokenize='unicode61 remove_diacritics 2')")
+                self.fts = True
+            except sqlite3.OperationalError:
+                self.fts = False
             c.execute("CREATE INDEX IF NOT EXISTS emails_item ON emails(item_id)")
             c.execute("CREATE INDEX IF NOT EXISTS emails_folder ON emails(folder, received_at DESC)")
             c.execute("CREATE INDEX IF NOT EXISTS emails_conv ON emails(conversation_id)")
@@ -422,8 +458,10 @@ class Database:
             where.append("status = ?")
             args.append(status)
         if q:
-            where.append("(subject LIKE ? OR sender LIKE ? OR summary LIKE ? OR jira_key LIKE ?)")
-            args += ["%{}%".format(q)] * 4
+            match = fts_query(q) if self.fts else ""
+            where.append("(subject LIKE ? OR sender LIKE ? OR summary LIKE ? OR jira_key LIKE ?{})".format(
+                " OR id IN (SELECT rowid FROM emails_fts WHERE emails_fts MATCH ?)" if match else ""))
+            args += ["%{}%".format(q)] * 4 + ([match] if match else [])
         clause = (" WHERE " + " AND ".join(where)) if where else ""
         with self.conn() as c:
             total = c.execute("SELECT COUNT(*) n FROM emails" + clause, args).fetchone()["n"]
@@ -489,10 +527,12 @@ class Database:
             c.execute("UPDATE emails SET status='classified', category=CASE WHEN category_manual=1 THEN category ELSE ? END, "
                       "confidence=?, summary=?, reason=?, jira_key=?, "
                       "recommend_action=?, action_hint=?, entities=?, invite_decision=?, session_id=?, classified_at=?, "
-                      "error=NULL, next_retry_at=NULL WHERE id=?",
+                      "media_notes=COALESCE(?, media_notes), error=NULL, next_retry_at=NULL WHERE id=?",
                       (res["category"], res["confidence"], res["summary"], res["reason"], res["jira_key"],
                        int(res["recommend_action"]), res["action_hint"], json.dumps(res.get("entities") or {}, ensure_ascii=False),
-                       _dump(res.get("invite")), session_id, now_iso(), eid))
+                       _dump(res.get("invite")), session_id, now_iso(), _dump(res.get("media") or None), eid))
+            for key, note in (res.get("media") or {}).items():  # уже разобранные строки раздела обновляем сразу
+                self._set_media_note(c, eid, key, note)
             self._log(c, eid, "classified", "{} ({})".format(res["category"], res["confidence"]))
 
     def classification_failed(self, eid: int, error: str, attempts: int) -> None:
@@ -651,6 +691,94 @@ class Database:
         with self.conn() as c:
             c.execute("UPDATE emails SET folder=?, item_id=NULL WHERE id=?", (GONE, eid))
             self._log(c, eid, "deleted", "навсегда")
+
+    # --- вложения, ссылки и полнотекстовый индекс ------------------------------
+    def index_pending(self, limit: int = 200) -> int:
+        """Разбирает письма, которые ещё не попали в раздел вложений и в поиск. Возвращает, сколько разобрано."""
+        with self.conn() as c:
+            rows = c.execute("SELECT id, subject, sender, sender_name, recipients, cc, received_at, body, body_html, "
+                             "attachments, media_notes FROM emails WHERE media_v < ? LIMIT ?",
+                             (MEDIA_VERSION, limit)).fetchall()
+        for r in rows:
+            e = _load(dict(r))
+            try:
+                items = extract_media(e)
+            except Exception:  # noqa: BLE001 — одно странное письмо не должно останавливать разбор остальных
+                items = []
+            head = " ".join([e["subject"] or "", e["sender_name"] or "", e["sender"] or ""]).lower()
+            notes = json.loads(e.get("media_notes") or "{}")
+            with self.conn() as c:
+                c.execute("DELETE FROM media WHERE email_id=?", (e["id"],))
+                for it in items:
+                    note = notes.get(item_key(it), "")
+                    search = " ".join([it["name"], it["url"] or "", it["context"], note, head]).lower()
+                    c.execute("INSERT INTO media(email_id, kind, att_index, name, url, domain, size, content_type, "
+                              "context, description, search, received_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                              (e["id"], it["kind"], it["att_index"], it["name"], it["url"], it["domain"], it["size"],
+                               it["content_type"], it["context"], note, search, e["received_at"]))
+                if self.fts:
+                    files = " ".join(it["name"] or it["domain"] for it in items)
+                    c.execute("DELETE FROM emails_fts WHERE rowid=?", (e["id"],))
+                    c.execute("INSERT INTO emails_fts(rowid, subject, people, body, files) VALUES(?, ?, ?, ?, ?)",
+                              (e["id"], e["subject"] or "",
+                               " ".join([e["sender_name"] or "", e["sender"] or "", e["recipients"] or "", e["cc"] or ""]),
+                               (e["body"] or "")[:FTS_BODY_CHARS], files))
+                c.execute("UPDATE emails SET media_v=? WHERE id=?", (MEDIA_VERSION, e["id"]))
+        return len(rows)
+
+    @staticmethod
+    def _set_media_note(c, eid: int, key: str, note: str) -> None:
+        if key.startswith("a"):
+            where, value = "att_index = ?", int(key[1:])
+        else:
+            where, value = "url = ?", key[1:]
+        c.execute("UPDATE media SET description=?, search=search || ' ' || ? WHERE email_id=? AND " + where,
+                  (note, note.lower(), eid, value))
+
+    def list_media(self, kind: str, q: str = "", sender: str = "", conversation_id: str = "", email_id: int = 0,
+                   excluded: Sequence[str] = (), hidden: Sequence[str] = (), limit: int = 60, offset: int = 0) -> dict:
+        """Вложения или ссылки, новые сверху. Одна и та же ссылка из цепочки — один раз, по первому письму с ней."""
+        gone = [GONE] + [h for h in hidden if h]
+        where = ["COALESCE(e.folder, '') NOT IN ({})".format(",".join("?" * len(gone)))]
+        args: list = list(gone)
+        if q:
+            for word in q.lower().split()[:8]:
+                where.append("m.search LIKE ?")
+                args.append("%{}%".format(word))
+        if sender:
+            where.append("lower(e.sender) = ?")
+            args.append(sender.lower())
+        if conversation_id:
+            where.append("e.conversation_id = ?")
+            args.append(conversation_id)
+        if email_id:
+            where.append("m.email_id = ?")
+            args.append(email_id)
+        for d in excluded:  # ссылки на исключённые домены не показываем
+            where.append("NOT (m.domain = ? OR m.domain LIKE ?)")
+            args += [d, "%." + d]
+        base = " FROM media m JOIN emails e ON e.id = m.email_id WHERE " + " AND ".join(where)
+        with self.conn() as c:
+            counts = {r["kind"]: r["n"] for r in c.execute(
+                "SELECT m.kind, COUNT(DISTINCT CASE WHEN m.kind='link' THEN m.url ELSE m.id END) n" + base +
+                " GROUP BY m.kind", args)}
+            cols = ("m.id, m.kind, m.email_id, m.att_index, m.name, m.url, m.domain, m.size, m.content_type, m.context, "
+                    "m.description, "
+                    "e.subject, e.sender, e.sender_name, e.summary, e.category, e.conversation_id")
+            if kind == "link":
+                rows = c.execute("SELECT " + cols + ", MIN(m.received_at) AS received_at" + base +
+                                 " AND m.kind='link' GROUP BY m.url ORDER BY received_at DESC LIMIT ? OFFSET ?",
+                                 args + [limit, offset]).fetchall()
+            else:
+                rows = c.execute("SELECT " + cols + ", m.received_at" + base +
+                                 " AND m.kind=? ORDER BY m.received_at DESC, m.id DESC LIMIT ? OFFSET ?",
+                                 args + [kind, limit, offset]).fetchall()
+        return {"items": [dict(r) for r in rows], "total": counts.get(kind, 0),
+                "counts": {k: counts.get(k, 0) for k in MEDIA_KINDS}}
+
+    def media_pending(self) -> int:
+        with self.conn() as c:
+            return c.execute("SELECT COUNT(*) n FROM emails WHERE media_v < ?", (MEDIA_VERSION,)).fetchone()["n"]
 
     def thread_ids(self, conversation_id: Optional[str], topic: str) -> List[int]:
         with self.conn() as c:

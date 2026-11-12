@@ -693,7 +693,7 @@ class FakeSource(FakeOffice):
          "Для информации: открытый митап, участие по желанию.", (2, "18:00", "19:00", "Онлайн")),
         ("colleague@example.com", "Перенос встречи", "Встреча по проекту переносится на четверг.", None),
         ("tester@example.com", "RE: Приглашение: ПСИ системы «Демо-Портал»",
-         "Стенд будет готов к 13:30, тестовые учётные записи пришлю отдельно.", None),
+         "Стенд будет готов к 13:30: https://stand.example.com/demo-portal. Тестовые учётные записи пришлю отдельно.", None),
     ]
     PSI_BANNER = (
         '<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-family:Segoe UI,Arial">'
@@ -793,7 +793,9 @@ class FakeSource(FakeOffice):
                  ("report", "Отчёт ПСИ ABC-123.pdf", "application/pdf", _fake_pdf("Report ABC-123"), False),
                  ("notes", "Замечания.txt", "text/plain", "1. Проверить логи\n2. Обновить чек-лист\n".encode(), False),
                  ("plan", "План релиза.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                  b"PK\x03\x04 fake xlsx", False)]
+                  b"PK\x03\x04 fake xlsx", False),
+                 ("shot", "Скриншот стенда.png", "image/png", _fake_png(640, 400), False),
+                 ("logs", "Логи стенда.zip", "application/zip", b"PK\x05\x06" + b"\x00" * 18, False)]
         m["attachments"] = []
         for aid, name, ctype, data, inline in files:
             self.files[(m["item_id"], aid)] = data
@@ -1016,7 +1018,7 @@ class FakeSource(FakeOffice):
         ("f-junk", 1, "winner@lottery.example.net", "Вы выиграли миллион!",
          "Переведите комиссию, чтобы получить выигрыш.", "conv-spam", False),
         ("f-demo", 3, "architect@example.com", "Демо-Портал: схема интеграции",
-         "Обновил схему интеграции с платёжным шлюзом, посмотрите раздел 3.", "conv-demo", True),
+         "Обновил схему интеграции с платёжным шлюзом, посмотрите раздел 3: https://wiki.example.com/demo/integration", "conv-demo", True),
         ("f-demo", 4, "vera.analyst@example.com", "Демо-Портал: требования к отчётам",
          "Собрала требования к отчётам, жду комментариев до пятницы.", "conv-demo2", False),
     ]
@@ -1185,6 +1187,8 @@ table.t th { background: #f5f5f5; }
 <p><img src="https://example.com/banner.png" alt="баннер" width="300" height="60" onerror="alert(1)"></p>
 <p>Подробности в <a href="https://jira.example.com/browse/ABC-123" onclick="alert(2)">Jira</a>
 и <a href="javascript:alert(3)">опасной ссылке</a>.</p>
+<p>Чек-лист приёмки лежит <a href="https://wiki.example.com/pages/abc-123-checklist">в вики</a>, скриншот стенда и логи во вложении.</p>
+<p>Созвон по приёмке: <a href="https://meet.example.com/j/4815162342">подключиться к видеовстрече</a></p>
 <blockquote>С уважением,<br>релиз-менеджер</blockquote>
 </div></body></html>"""
 

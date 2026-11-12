@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Optional
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from . import calendar_ops, compose, office
+from . import calendar_ops, compose, media, office
 from .html_view import clean_fragment
 from .classifier import BUILTIN_VARIABLES, ClassifyError, build_prompt, render_action, substitute, variables
 from .db import CATEGORY_ENV_FIELDS, DEFAULT_CLASSIFY_PROMPT, Database
@@ -28,7 +28,7 @@ from .worker import Worker
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html")
 # второй файл интерфейса: подписи, флажки, автоответ, правила, контакты, задачи, уведомления.
 # CSP разрешает только встроенные скрипты, поэтому вставляем его в страницу при отдаче
-STATIC_EXTRA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "office.js")
+STATIC_EXTRA = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", name) for name in ("office.js", "media.js")]
 COOKIE = "mailbot_session"
 SESSION_TTL = 12 * 3600
 MAX_FAILURES, LOCK_SECONDS = 5, 60
@@ -43,7 +43,8 @@ SETTING_KEYS = {"ews_server": str, "ews_email": str, "ews_auth": str, "ca_bundle
                 "polling_enabled": bool, "poll_seconds": int, "initial_days": int, "gigacode_url": str,
                 "skill_cwd": str, "skill_permission": str, "max_body_chars": int, "classify_prompt": str,
                 "entities": list, "calendar_auto": bool, "work_start": str, "work_end": str,
-                "free_slots_count": int, "invite_prompt": str}
+                "free_slots_count": int, "invite_prompt": str, "media_exclude_domains": list,
+                "backfill_days": int}
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
 MAX_CALENDAR_DAYS = 62
 SECRET_KEYS = ("ews_username", "ews_password", "gigacode_token")
@@ -231,9 +232,11 @@ class Handler(BaseHTTPRequestHandler):
     def index(self):
         with open(STATIC, "rb") as f:
             body = f.read()
-        with open(STATIC_EXTRA, "rb") as f:
-            extra = f.read().replace(b"</script", b"<\\/script")
-        body = body.replace(b"</body>", b"<script>\n" + extra + b"\n</script>\n</body>", 1)
+        extra = b""
+        for path in STATIC_EXTRA:
+            with open(path, "rb") as f:
+                extra += b"<script>\n" + f.read().replace(b"</script", b"<\\/script") + b"\n</script>\n"
+        body = body.replace(b"</body>", extra + b"</body>", 1)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -284,6 +287,28 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"ok": True})
 
     # === письма ==========================================================
+    @route("GET", "/api/media")
+    def media_list(self):
+        """Раздел «Вложения и ссылки»: kind — photo, file, archive или link; можно сузить до цепочки или отправителя."""
+        q = self.query
+        kind = q.get("kind", "file")
+        if kind not in media.KINDS:
+            raise HttpError(400, "kind: photo, file, archive или link")
+        try:
+            limit = max(1, min(int(q.get("limit", 60)), 200))
+            offset = max(0, int(q.get("offset", 0)))
+            email_id = int(q.get("email") or 0)
+        except ValueError:
+            raise HttpError(400, "limit, offset и email — целые числа")
+        db = self.ctx.db
+        excluded = db.settings().get("media_exclude_domains") or []
+        data = db.list_media(kind, q.get("q", "").strip()[:200], q.get("sender", "").strip()[:320],
+                             q.get("conv", "")[:512], email_id, excluded, self.ctx.worker.hidden_folders(), limit, offset)
+        data["excluded"] = excluded
+        data["pending"] = db.media_pending()
+        data["backfill"] = self.ctx.worker.status.get("backfill")
+        self._json(200, data)
+
     @route("GET", "/api/emails")
     def emails(self):
         q = self.query
@@ -887,6 +912,8 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(400, "skill_permission: allow, ask или reject")
         if "entities" in values:
             values["entities"] = clean_entities(values["entities"])
+        if "media_exclude_domains" in values:
+            values["media_exclude_domains"] = media.clean_domains(values["media_exclude_domains"])
         if int(values.get("poll_seconds", 15)) < 5:
             raise HttpError(400, "Интервал опроса — не меньше 5 секунд")
         current = self.ctx.db.settings()
@@ -895,6 +922,8 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(400, "Рабочие часы — ЧЧ:ММ, начало раньше конца")
         if not 1 <= int(values.get("free_slots_count", current["free_slots_count"])) <= 10:
             raise HttpError(400, "Свободных окон — от 1 до 10")
+        if not 0 <= int(values.get("backfill_days", current["backfill_days"])) <= 3650:
+            raise HttpError(400, "Старая почта — от 0 до 3650 дней")
         self.ctx.db.set_settings(values)
         # пустой пароль в форме означает «не менять»: сохранённый секрет наружу не отдаётся
         secrets_update = {k: str(body[k]) for k in SECRET_KEYS
@@ -902,6 +931,8 @@ class Handler(BaseHTTPRequestHandler):
         if secrets_update:
             self.ctx.vault.update(**secrets_update)
         self.ctx.worker.reset_source()
+        if "backfill_days" in values:
+            self.ctx.worker.backfill_wake.set()
         self._json(200, {"ok": True})
 
     # === категории =======================================================

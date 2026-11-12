@@ -102,8 +102,9 @@ nav hr { border: 0; border-top: 1px solid var(--border); margin: 8px 4px; }
 .tag.bad { background: var(--danger-bg); color: var(--danger); }
 #detail { flex: 1; min-width: 0; overflow-y: auto; padding: 18px 24px 28px; background: var(--bg); }
 .wrap { max-width: 1100px; margin: 0 auto; }
-.rpHead { display: flex; gap: 10px; align-items: flex-start; }
-.rpHead h2 { flex: 1; font-size: 21px !important; font-weight: 600 !important; line-height: 1.3; margin: 0 !important; }
+.rpHead { display: flex; gap: 8px 10px; align-items: flex-start; flex-wrap: wrap; }
+.rpHead > .btn { flex-shrink: 0; }
+.rpHead h2 { flex: 1 1 260px; font-size: 21px !important; font-weight: 600 !important; line-height: 1.3; margin: 0 !important; }
 .rpFrom { display: flex; gap: 12px; align-items: flex-start; margin: 14px 0 4px; }
 .rpFrom .ava { width: 42px; height: 42px; font-size: 15px; }
 .rpFrom .who { flex: 1; min-width: 0; }
@@ -700,6 +701,7 @@ nav button.on .n.u { background: none; color: var(--accent); }
     <button data-view="mail" class="on"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>Почта</button>
     <button data-view="people"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 3-5.8 6.5-5.8s6.5 2.2 6.5 5.8"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.6c2.2.6 3.5 2.4 3.5 5.4"/></svg>Контакты</button>
     <button data-view="tasks"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="m8 12 3 3 5-6"/></svg>Задачи</button>
+    <button data-view="media"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m20.5 11.5-8.3 8.3a5.2 5.2 0 0 1-7.4-7.4l8.6-8.6a3.5 3.5 0 0 1 4.9 4.9l-8.6 8.6a1.7 1.7 0 0 1-2.5-2.5l7.9-7.9"/></svg>Вложения</button>
     <button data-view="calendar"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4.5" width="18" height="16.5" rx="2"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/><path d="M7.5 13.5h2M11 13.5h2M14.5 13.5h2M7.5 17h2M11 17h2"/></svg>Календарь</button>
   </aside>
   <div class="layout" id="layout">
@@ -877,7 +879,10 @@ nav button.on .n.u { background: none; color: var(--accent); }
       <div class="grid">
         <div><label for="s_poll_seconds">Интервал опроса, с</label><input id="s_poll_seconds" type="number" min="5"></div>
         <div><label for="s_initial_days">При первом запуске брать за, дней</label><input id="s_initial_days" type="number" min="0"></div>
+        <div><label for="s_backfill_days">Старую почту подгружать за, дней</label><input id="s_backfill_days" type="number" min="0" max="3650"></div>
       </div>
+      <div class="hint">Старая почта подгружается в фоне из всех папок, кроме удалённых, нежелательных и черновиков, по 50 писем.
+        Она нужна для раздела «Вложения» и поиска, модель её не разбирает. 0 — не подгружать.</div>
       <label class="check"><input id="s_polling_enabled" type="checkbox"> Опрашивать почту</label>
     </div>
 
@@ -1051,7 +1056,7 @@ function showApp() {
   if (!SOLO_ID) startReminders();
   if (!timer) timer = setInterval(() => { refresh(); refreshDetail(); refreshStatus(); }, 4000);
   if (!SOLO_ID && location.hash === "#categories") openCats().catch((e) => alert(e.message));
-  if (!SOLO_ID && ["#calendar", "#people", "#tasks"].includes(location.hash)) showView(location.hash.slice(1));
+  if (!SOLO_ID && ["#calendar", "#people", "#tasks", "#media"].includes(location.hash)) showView(location.hash.slice(1));
   if (!SOLO_ID) startOffice();
 }
 $("logoutBtn").onclick = async () => { await api("POST", "/api/logout"); showAuth(); };
@@ -1642,6 +1647,14 @@ function renderDetail(m) {
     const pop = el("button", "btn small", "↗ В отдельном окне");
     pop.onclick = () => window.open("/?email=" + m.id, "mail" + m.id, "width=1280,height=860");
     head.appendChild(pop);
+    if (typeof openMedia === "function") {  // все вложения и ссылки этой переписки, как медиа чата
+      const media = el("button", "btn small", "Вложения и ссылки");
+      media.title = m.conversation_id ? "Всё из этой переписки" : "Всё от этого отправителя";
+      media.onclick = () => openMedia(m.conversation_id
+        ? { conv: m.conversation_id, label: "Переписка: " + (m.subject || "(без темы)") }
+        : { sender: m.sender, label: "От: " + (m.sender_name || m.sender) });
+      head.appendChild(media);
+    }
   }
   w.appendChild(head);
   if (SOLO_ID) document.title = (m.subject || "(без темы)") + " — GigaMail";
@@ -2498,6 +2511,7 @@ function showView(view) {
   history.replaceState(null, "", view === "mail" ? location.pathname + location.search : "#" + view);
   if (view === "calendar") loadCal();
   officeView(view);
+  if (typeof mediaView === "function") mediaView(view);
 }
 document.querySelectorAll("#rail button").forEach((b) => { b.onclick = () => showView(b.dataset.view); });
 
@@ -3477,7 +3491,7 @@ function startReminders() {
 // ---------- настройки ----------
 const TEXT_FIELDS = ["ews_server", "ews_email", "ews_username", "ews_auth", "ca_bundle", "poll_seconds", "initial_days",
   "gigacode_url", "skill_cwd", "skill_permission", "max_body_chars", "classify_prompt", "work_start", "work_end",
-  "free_slots_count", "invite_prompt"];
+  "free_slots_count", "invite_prompt", "backfill_days"];
 function addEntityRow(item) {
   const r = el("div", "entRow"), pair = el("div", "pair");
   const field = (key, label, tag, hint) => {

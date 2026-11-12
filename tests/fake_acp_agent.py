@@ -135,6 +135,10 @@ def classify(rid, sid, text):
                 "reason": "по ключевым словам", "jira_key": "ABC-123" if category == "RELEASE" else None,
                 "recommend_action": category == "RELEASE",
                 "action_hint": "Проверить релиз" if category == "RELEASE" else "", "entities": entities}
+        # описания вложений и ссылок: «Тестовое описание» и что это было
+        media = re.findall(r"^(\d+)\. (фото|файл|архив|ссылка)(?: «([^»]*)»)?", head, re.M)
+        if media:
+            data["media"] = {n: "Тестовое описание: {} {}".format(kind, name).strip() for n, kind, name in media}
         if invite:  # свободно — принять, митап — решит человек, занято — отклонить и предложить окно
             if "Митап" in mail or "Для информации" in mail:
                 data["invite"] = {"action": "none", "reply": "", "propose": None}
