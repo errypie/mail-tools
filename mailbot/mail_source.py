@@ -1034,6 +1034,13 @@ class FakeSource(FakeOffice):
                 "body": body, "has_attachments": False, "folder": folder, "is_read": read,
                 "conversation_id": conv, "conversation_topic": subject.split(": ", 1)[-1] if conv != "conv-release" else "ABC-123",
                 "flag": 2 if i == 3 else 0}
+        # повторы для раздела «Вложения»: тот же план релиза в старом письме и под другим именем в ответе
+        plan = b"PK\x03\x04 fake xlsx"
+        for item_id, name in (("old-1", "План релиза.xlsx"), ("old-2", "plan_final.xlsx")):
+            self.files[(item_id, "plan")] = plan
+            self.box[item_id].update(has_attachments=True, attachments=[{
+                "id": "plan", "name": name, "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "size": len(plan), "inline": False, "content_id": "", "file": True}])
 
     def folders(self) -> List[dict]:
         out = []

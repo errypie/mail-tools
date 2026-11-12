@@ -215,6 +215,13 @@ def item_key(it: dict) -> str:
     return "a{}".format(it["att_index"]) if it.get("att_index") is not None else "u" + (it.get("url") or "")
 
 
+def nkey(it: dict) -> str:
+    """Ключ повтора: файл — имя без учёта регистра и размер до байта, ссылка — адрес."""
+    if it.get("kind") == "link":
+        return "u:" + (it.get("url") or "")
+    return "f:{}|{}".format(_squash(it.get("name") or "").lower(), int(it.get("size") or 0))
+
+
 def prompt_items(email: dict, excluded: Sequence[str] = ()) -> List[dict]:
     """Что попросить описать модель: вложения и ссылки письма без цитат и исключённых доменов. [{key, label}]."""
     out = []

@@ -895,6 +895,15 @@ nav button.on .n.u { background: none; color: var(--accent); }
           <textarea id="s_blocked_senders" rows="5" placeholder="noreply@jira.example.ru&#10;@shop.example.com"></textarea></div>
       </div>
       <div class="hint">По одному адресу или домену на строку. Если белый список заполнен, берутся только письма из него; если пуст — все. Чёрный список важнее белого. Отсеянные письма не сохраняются и не уходят в модель. Списки действуют на новые письма.</div>
+      <div class="grid">
+        <div><label for="s_media_muted_senders">Серый список</label>
+          <textarea id="s_media_muted_senders" rows="5" placeholder="noreply@monitoring.example.ru&#10;@digest.example.com"></textarea></div>
+        <div><label for="s_media_exclude_domains">Не показывать ссылки на домены</label>
+          <textarea id="s_media_exclude_domains" rows="5" placeholder="meet.example.com"></textarea></div>
+      </div>
+      <div class="hint">Серый список: письма от этих отправителей приходят и находятся поиском как обычно, но их фото, файлы,
+        архивы и ссылки не попадают в раздел «Вложения». Подходит для авторассылок с картинками. Действует и на уже
+        сохранённую почту. Домены ссылок скрываются вместе с поддоменами, например домен ссылок на видеовстречи.</div>
     </div>
 
     <div class="card" data-set="gigacode" data-title="GigaCode" hidden>
@@ -1816,18 +1825,24 @@ function renderDetail(m) {
   const again = el("button", "btn small", "Классифицировать заново");
   again.onclick = async () => { await api("POST", "/api/emails/" + m.id + "/reclassify"); detailSig = ""; refreshDetail(); refresh(); };
   tools.appendChild(again);
-  const block = (scope, label, what) => {
+  const block = (scope, label, what, list) => {
     const b = el("button", "btn small", label);
     b.onclick = async () => {
-      if (!confirm("Новые письма от " + what + " перестанут приходить. Убрать правило можно в настройках.")) return;
-      try { const r = await api("POST", "/api/emails/" + m.id + "/block-sender", { scope }); b.disabled = true; b.textContent = "Заблокировано: " + r.blocked; }
-      catch (e) { alert(e.message); }
+      const ask = list === "muted"
+        ? "Письма от " + what + " будут приходить, но их фото, файлы и ссылки уйдут из раздела «Вложения». Убрать правило можно в настройках."
+        : "Новые письма от " + what + " перестанут приходить. Убрать правило можно в настройках.";
+      if (!confirm(ask)) return;
+      try {
+        const r = await api("POST", "/api/emails/" + m.id + "/block-sender", { scope, list });
+        b.disabled = true; b.textContent = (list === "muted" ? "В сером списке: " : "Заблокировано: ") + r.blocked;
+      } catch (e) { alert(e.message); }
     };
     tools.appendChild(b);
   };
   if (m.sender.includes("@")) {
     block("address", "В чёрный список", m.sender);
     block("domain", "Заблокировать домен", "@" + m.sender.split("@")[1]);
+    if (m.has_attachments || /https?:\/\//.test(m.body || "")) block("address", "Не собирать вложения", m.sender, "muted");
   }
   if (m.session_id) tools.appendChild(sessionLink(m.gigacode_url, m.session_id, "Как модель это разбирала"));
   w.appendChild(tools);
@@ -3517,6 +3532,8 @@ async function openSettings() {
   TEXT_FIELDS.forEach((k) => { $("s_" + k).value = s[k] == null ? "" : s[k]; });
   $("s_allowed_senders").value = (s.allowed_senders || []).join("\n");
   $("s_blocked_senders").value = (s.blocked_senders || []).join("\n");
+  $("s_media_muted_senders").value = (s.media_muted_senders || []).join("\n");
+  $("s_media_exclude_domains").value = (s.media_exclude_domains || []).join("\n");
   $("s_polling_enabled").checked = !!s.polling_enabled;
   $("s_calendar_auto").checked = !!s.calendar_auto;
   $("s_invite_prompt").placeholder = s.default_invite_prompt;
@@ -3536,6 +3553,8 @@ async function saveSettings() {
   const lines = (id) => $(id).value.split("\n").map((x) => x.trim()).filter(Boolean);
   body.allowed_senders = lines("s_allowed_senders");
   body.blocked_senders = lines("s_blocked_senders");
+  body.media_muted_senders = lines("s_media_muted_senders");
+  body.media_exclude_domains = lines("s_media_exclude_domains");
   body.polling_enabled = $("s_polling_enabled").checked;
   body.calendar_auto = $("s_calendar_auto").checked;
   body.entities = [...$("entityList").children]

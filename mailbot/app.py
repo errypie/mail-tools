@@ -44,12 +44,22 @@ SETTING_KEYS = {"ews_server": str, "ews_email": str, "ews_auth": str, "ca_bundle
                 "skill_cwd": str, "skill_permission": str, "max_body_chars": int, "classify_prompt": str,
                 "entities": list, "calendar_auto": bool, "work_start": str, "work_end": str,
                 "free_slots_count": int, "invite_prompt": str, "media_exclude_domains": list,
-                "backfill_days": int}
+                "backfill_days": int, "media_muted_senders": list}
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
 MAX_CALENDAR_DAYS = 62
 SECRET_KEYS = ("ews_username", "ews_password", "gigacode_token")
 CATEGORY_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 ENTITY_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,31}$")
+
+
+def _sender_rules(values) -> list:
+    """Адреса и домены по одному: без пробелов и повторов, в нижнем регистре."""
+    out = []
+    for v in values or []:
+        v = str(v).strip().lower()
+        if v and " " not in v and v not in out:
+            out.append(v[:320])
+    return out[:500]
 
 
 class HttpError(Exception):
@@ -308,6 +318,15 @@ class Handler(BaseHTTPRequestHandler):
         data["pending"] = db.media_pending()
         data["backfill"] = self.ctx.worker.status.get("backfill")
         self._json(200, data)
+
+    @route("GET", "/api/media/copies")
+    def media_copies(self):
+        """В каких письмах встречается тот же файл или ссылка."""
+        try:
+            media_id = int(self.query.get("id", ""))
+        except ValueError:
+            raise HttpError(400, "id — целое число")
+        self._json(200, {"copies": self.ctx.db.media_copies(media_id, self.ctx.worker.hidden_folders())})
 
     @route("GET", "/api/emails")
     def emails(self):
@@ -870,10 +889,14 @@ class Handler(BaseHTTPRequestHandler):
         sender = self._email_or_404(eid)["sender"].strip().lower()
         if "@" not in sender:
             raise HttpError(400, "У письма нет адреса отправителя")
-        rule = "@" + sender.split("@", 1)[1] if self._body().get("scope") == "domain" else sender
-        blocked = self.ctx.db.settings()["blocked_senders"]
-        if rule not in [b.strip().lower() for b in blocked]:
-            self.ctx.db.set_settings({"blocked_senders": blocked + [rule]})
+        body = self._body()
+        rule = "@" + sender.split("@", 1)[1] if body.get("scope") == "domain" else sender
+        key = "media_muted_senders" if body.get("list") == "muted" else "blocked_senders"  # серый или чёрный список
+        rules = self.ctx.db.settings().get(key) or []
+        if rule not in [b.strip().lower() for b in rules]:
+            self.ctx.db.set_settings({key: rules + [rule]})
+            if key == "media_muted_senders":
+                self.ctx.db.apply_muted(rules, rules + [rule])
         self._json(200, {"blocked": rule})
 
     # === статус ==========================================================
@@ -914,6 +937,8 @@ class Handler(BaseHTTPRequestHandler):
             values["entities"] = clean_entities(values["entities"])
         if "media_exclude_domains" in values:
             values["media_exclude_domains"] = media.clean_domains(values["media_exclude_domains"])
+        if "media_muted_senders" in values:
+            values["media_muted_senders"] = _sender_rules(values["media_muted_senders"])
         if int(values.get("poll_seconds", 15)) < 5:
             raise HttpError(400, "Интервал опроса — не меньше 5 секунд")
         current = self.ctx.db.settings()
@@ -925,6 +950,8 @@ class Handler(BaseHTTPRequestHandler):
         if not 0 <= int(values.get("backfill_days", current["backfill_days"])) <= 3650:
             raise HttpError(400, "Старая почта — от 0 до 3650 дней")
         self.ctx.db.set_settings(values)
+        if "media_muted_senders" in values:
+            self.ctx.db.apply_muted(current.get("media_muted_senders") or [], values["media_muted_senders"])
         # пустой пароль в форме означает «не менять»: сохранённый секрет наружу не отдаётся
         secrets_update = {k: str(body[k]) for k in SECRET_KEYS
                           if k in body and (body[k] or k == "ews_username")}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import shutil
 import threading
@@ -20,7 +21,7 @@ from .gigacode_client import GigaCodeClient
 from .health import hint_for, timed
 from . import calendar_ops, compose, media
 from .html_view import clean_fragment, render as render_html, text_document
-from .mail_source import MailError, fetch_since, sender_allowed
+from .mail_source import MailError, fetch_since, sender_allowed, sender_matches
 from .vault import Vault
 
 BATCH = 500
@@ -207,7 +208,8 @@ class Worker:
         s = self.db.settings()
         categories = self.db.categories()
         self._refresh_invite(email, s)
-        items = media.prompt_items(email, s.get("media_exclude_domains") or [])
+        items = [] if sender_matches(email.get("sender", ""), s.get("media_muted_senders") or []) \
+            else media.prompt_items(email, s.get("media_exclude_domains") or [])
         prompt = self._prompt(email, categories, s, items)
         try:
             res = self.gigacode()._json("POST", "/api/chat", {"prompt": prompt})
@@ -383,6 +385,10 @@ class Worker:
         if not email.get("item_id"):
             raise MailError("Письмо получено старой версией сервиса, вложение можно открыть только в Outlook")
         data = self.calendar().attachment(email["item_id"], meta["id"])
+        try:  # файл уже скачан: по хэшу склеим копии с другими именами в разделе «Вложения»
+            self.db.set_media_hash(email["id"], index, hashlib.sha256(data).hexdigest())
+        except Exception:  # noqa: BLE001 — раздел вложений не должен мешать открыть файл
+            pass
         with self._cache_lock:
             self._att_cache[key] = data
             while sum(len(v) for v in self._att_cache.values()) > ATTACHMENT_CACHE_BYTES and len(self._att_cache) > 1:

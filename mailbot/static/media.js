@@ -36,20 +36,26 @@
 .mdRow .meta { font-size: 12.5px; color: var(--muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mdRow .acts { display: flex; gap: 2px; flex-shrink: 0; }
 .mdLinkIco { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 15px; flex-shrink: 0; margin-top: 2px; text-transform: uppercase; }
-.mdEx { margin: 12px 0 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; max-width: 560px; }
-.mdEx textarea { width: 100%; font-family: inherit; }
-.mdEx .hint { margin: 4px 0 8px; }
 .mdMore { margin: 16px auto 0; display: block; }
 .mdRow .ai { font-size: 13.5px; margin-top: 3px; overflow-wrap: anywhere; }
 .mdRow .ai::before { content: "✦ "; color: var(--accent); }
 .mdProg { font-size: 12.5px; color: var(--muted); margin: 10px 0 0; }
+.mdCopiesBtn { border: 0; background: var(--select); color: var(--text); border-radius: 10px; padding: 1px 8px; font-size: 12px; cursor: pointer; margin-left: 6px; }
+.mdCopiesBtn:hover { color: var(--accent); }
+.mdCopies { margin: 6px 0 2px; border-left: 2px solid var(--border); padding-left: 10px; display: grid; gap: 2px; }
+.mdCopies .cp { display: flex; gap: 8px; align-items: baseline; font-size: 13px; padding: 3px 6px; border-radius: 6px; cursor: pointer; min-width: 0; }
+.mdCopies .cp:hover { background: var(--panel); }
+.mdCopies .cp .w { color: var(--muted); white-space: nowrap; }
+.mdCopies .cp .s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.mdCopies .cp .n { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.mdTile .cnt { position: absolute; top: 6px; right: 6px; background: rgba(0,0,0,.6); color: #fff; font-size: 11.5px; border-radius: 10px; padding: 1px 7px; }
 @media (max-width: 760px) { .mdTop, .mdBody { padding-left: 12px; padding-right: 12px; } .mdGrid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); } .mdRow .acts .btn { display: none; } }
 `;
   document.head.appendChild(Object.assign(document.createElement("style"), { textContent: css }));
 })();
 
 const MD_KINDS = [["photo", "Фото"], ["file", "Файлы"], ["archive", "Архивы"], ["link", "Ссылки"]];
-const md = { kind: null, q: "", scope: null, items: [], total: 0, counts: {}, excluded: [], seq: 0, showEx: false, timer: null };
+const md = { kind: null, q: "", scope: null, items: [], total: 0, counts: {}, excluded: [], seq: 0, timer: null };
 const MD_PAGE = 60;
 const MD_COLORS = ["#2563eb", "#7c3aed", "#0891b2", "#16a34a", "#ea580c", "#db2777", "#4f46e5", "#0d9488"];
 
@@ -114,18 +120,15 @@ function renderMedia(pending) {
   MD_KINDS.forEach(([k, t]) => {
     const b = el("button", k === md.kind ? "on" : "", t);
     b.appendChild(el("b", "", String(md.counts[k] || 0)));
-    b.onclick = () => { if (md.kind !== k) { md.kind = k; md.items = []; md.showEx = false; loadMedia(); } };
+    b.onclick = () => { if (md.kind !== k) { md.kind = k; md.items = []; loadMedia(); } };
     tabs.appendChild(b);
   });
-  if (md.kind === "link") {
-    tabs.appendChild(el("span", "sp"));
-    const ex = el("button", md.showEx ? "on" : "", "Исключения" + (md.excluded.length ? " (" + md.excluded.length + ")" : ""));
-    ex.title = "Домены, ссылки на которые не показываются";
-    ex.onclick = () => { md.showEx = !md.showEx; renderMedia(pending); };
-    tabs.appendChild(ex);
-  }
+  tabs.appendChild(el("span", "sp"));
+  const cfg = el("button", "", "Серый список");
+  cfg.title = "Отправители, чьи вложения и ссылки не собираются, и скрытые домены ссылок — в настройках";
+  cfg.onclick = () => openSettings().then(() => showSetSection("senders"));
+  tabs.appendChild(cfg);
   const body = $("mdBody"), keep = body.scrollTop; body.textContent = "";
-  if (md.kind === "link" && md.showEx) body.appendChild(excludeEditor());
   if (pending) body.appendChild(el("div", "hint", "Разбираю письма: осталось " + pending + ". Список дополнится сам."));
   const bf = md.backfill;
   if (bf && bf.enabled && (bf.running || bf.error)) {
@@ -175,6 +178,7 @@ function photoTile(it) {
   img.src = attUrl(it.email_id, it.att_index, true);
   img.onerror = () => { img.remove(); t.prepend(el("span", "ph", it.name)); };
   t.append(img, el("span", "cap", it.sender_name || it.name));
+  if (it.copies > 1) { const c = el("span", "cnt", "×" + it.copies); c.title = "Встречается в " + it.copies + " письмах"; t.appendChild(c); }
   t.onclick = () => openViewer({ id: it.email_id }, asAtt(it), it.att_index);
   t.oncontextmenu = (e) => { e.preventDefault(); openMail(it); };
   return t;
@@ -194,6 +198,7 @@ function fileRow(it) {
   const acts = el("div", "acts"), dl = el("a", "iconBtn");
   dl.href = attUrl(it.email_id, it.att_index, false); dl.setAttribute("download", it.name); dl.title = "Скачать"; dl.innerHTML = ICON.down;
   acts.append(dl, mailBtn(it));
+  copiesUi(it, main);
   r.append(icon, main, acts);
   return r;
 }
@@ -221,21 +226,34 @@ function linkRow(it) {
     try { await navigator.clipboard.writeText(it.url); toast("Ссылка скопирована"); } catch (e) { prompt("Ссылка:", it.url); }
   };
   acts.append(copy, mailBtn(it));
+  copiesUi(it, main);
   r.append(ico, main, acts);
   return r;
 }
 
-function excludeEditor() {
-  const box = el("div", "mdEx"), t = el("textarea"), save = el("button", "btn small primary", "Сохранить");
-  t.id = "mdExclude"; t.rows = 4; t.value = md.excluded.join("\n"); t.placeholder = "meet.example.com";
-  const l = el("label", "", "Не показывать ссылки на домены"); l.htmlFor = t.id;
-  save.onclick = async () => {
-    save.disabled = true;
+// тот же файл или ссылка в нескольких письмах: «в N письмах», по щелчку — список писем
+function copiesUi(it, main) {
+  if (!(it.copies > 1)) return;
+  const meta = main.querySelector(".meta"), b = el("button", "mdCopiesBtn", "в " + it.copies + " " + plural(it.copies, "письме", "письмах", "письмах"));
+  b.title = "Показать письма, где " + (it.kind === "link" ? "есть эта ссылка" : "приложен этот файл");
+  let box = null;
+  b.onclick = async () => {
+    if (box) { box.remove(); box = null; return; }
+    box = el("div", "mdCopies"); box.appendChild(el("div", "hint", "Загружаю…")); main.appendChild(box);
     try {
-      await api("PUT", "/api/settings", { media_exclude_domains: t.value.split(/[\s,;]+/).filter(Boolean) });
-      toast("Исключения сохранены"); md.showEx = false; loadMedia();
-    } catch (e) { alert(e.message); save.disabled = false; }
+      const d = await api("GET", "/api/media/copies?id=" + it.id), list = box;
+      list.textContent = "";
+      d.copies.forEach((c) => {
+        const row = el("div", "cp"); row.tabIndex = 0; row.setAttribute("role", "button");
+        row.append(el("span", "w", mdDate(c.received_at)), el("span", "w", c.sender_name || c.sender),
+          el("span", "s", c.subject || "(без темы)"));
+        if (it.kind !== "link" && c.name !== it.name) row.appendChild(el("span", "n", c.name));
+        row.title = "Открыть письмо";
+        const open = () => openMail({ email_id: c.email_id });
+        row.onclick = open; row.onkeydown = (e) => { if (e.key === "Enter") open(); };
+        list.appendChild(row);
+      });
+    } catch (e) { box.textContent = e.message; }
   };
-  box.append(l, el("div", "hint", "По одному на строке. Поддомены тоже скрываются: например, домен ссылок на видеовстречи."), t, save);
-  return box;
+  meta.appendChild(b);
 }

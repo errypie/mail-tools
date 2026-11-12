@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Iterator, List, Optional, Sequence
 
-from .media import KINDS as MEDIA_KINDS, extract as extract_media, fts_query, item_key
+from .media import KINDS as MEDIA_KINDS, extract as extract_media, fts_query, item_key, nkey as media_nkey
 from .meetings import DEFAULT_INVITE_PROMPT, MEETING_CATEGORY
 
 SCHEMA = """
@@ -123,6 +123,9 @@ CREATE TABLE IF NOT EXISTS media (            -- вложения и ссылк�
     context TEXT NOT NULL DEFAULT '',         -- фраза письма вокруг ссылки или про вложение
     description TEXT NOT NULL DEFAULT '',     -- описание от модели при разборе письма
     search TEXT NOT NULL DEFAULT '',          -- всё для поиска в нижнем регистре
+    nkey TEXT,                                -- файл: имя и размер; ссылка: адрес
+    dkey TEXT,                                -- ключ склейки повторов: nkey или группа с тем же содержимым
+    fhash TEXT,                               -- SHA-256 содержимого, считается при первом скачивании
     received_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS media_kind ON media(kind, received_at DESC);
@@ -180,6 +183,7 @@ DEFAULT_SETTINGS = {
     "invite_prompt": DEFAULT_INVITE_PROMPT,
     "media_exclude_domains": [],
     "backfill_days": 180,
+    "media_muted_senders": [],
 }
 
 CATEGORY_ENV_FIELDS = ("cwd", "files", "include_dirs", "approval_mode", "permission", "model")
@@ -250,8 +254,19 @@ class Database:
                 c.execute("ALTER TABLE emails ADD COLUMN flag INTEGER NOT NULL DEFAULT 0")
             if "media_notes" not in columns:  # описания вложений и ссылок от модели: {ключ: описание}
                 c.execute("ALTER TABLE emails ADD COLUMN media_notes TEXT")
-            if "description" not in {r["name"] for r in c.execute("PRAGMA table_info(media)")}:
+            media_cols = {r["name"] for r in c.execute("PRAGMA table_info(media)")}
+            if "description" not in media_cols:
                 c.execute("ALTER TABLE media ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+            for column in ("nkey", "dkey", "fhash"):  # склейка одинаковых файлов из разных писем
+                if column not in media_cols:
+                    c.execute("ALTER TABLE media ADD COLUMN {} TEXT".format(column))
+            c.execute("CREATE INDEX IF NOT EXISTS media_dkey ON media(dkey)")
+            c.execute("CREATE INDEX IF NOT EXISTS media_nkey ON media(nkey)")
+            c.execute("CREATE INDEX IF NOT EXISTS media_fhash ON media(fhash)")
+            for r in c.execute("SELECT id, kind, name, size, url FROM media WHERE nkey IS NULL").fetchall():
+                key = media_nkey(dict(r))
+                c.execute("UPDATE media SET nkey=?, dkey=COALESCE((SELECT dkey FROM media WHERE nkey=? AND dkey IS NOT NULL "
+                          "LIMIT 1), ?) WHERE id=?", (key, key, key, r["id"]))
             if "media_v" not in columns:  # версия разбора вложений и ссылок, 0 — ещё не разобрано
                 c.execute("ALTER TABLE emails ADD COLUMN media_v INTEGER NOT NULL DEFAULT 0")
             c.execute("CREATE INDEX IF NOT EXISTS emails_media ON emails(media_v)")
@@ -695,27 +710,36 @@ class Database:
     # --- вложения, ссылки и полнотекстовый индекс ------------------------------
     def index_pending(self, limit: int = 200) -> int:
         """Разбирает письма, которые ещё не попали в раздел вложений и в поиск. Возвращает, сколько разобрано."""
+        from .mail_source import sender_matches
+        muted = self.settings().get("media_muted_senders") or []
         with self.conn() as c:
             rows = c.execute("SELECT id, subject, sender, sender_name, recipients, cc, received_at, body, body_html, "
                              "attachments, media_notes FROM emails WHERE media_v < ? LIMIT ?",
                              (MEDIA_VERSION, limit)).fetchall()
         for r in rows:
             e = _load(dict(r))
-            try:
-                items = extract_media(e)
+            try:  # серый список: письмо ищется, но его вложения и ссылки в раздел не попадают
+                items = [] if sender_matches(e["sender"], muted) else extract_media(e)
             except Exception:  # noqa: BLE001 — одно странное письмо не должно останавливать разбор остальных
                 items = []
             head = " ".join([e["subject"] or "", e["sender_name"] or "", e["sender"] or ""]).lower()
             notes = json.loads(e.get("media_notes") or "{}")
             with self.conn() as c:
+                hashes = {r["att_index"]: r["fhash"] for r in c.execute(  # при повторном разборе хэши не теряем
+                    "SELECT att_index, fhash FROM media WHERE email_id=? AND fhash IS NOT NULL", (e["id"],))}
                 c.execute("DELETE FROM media WHERE email_id=?", (e["id"],))
                 for it in items:
                     note = notes.get(item_key(it), "")
                     search = " ".join([it["name"], it["url"] or "", it["context"], note, head]).lower()
+                    nkey, fhash = media_nkey(it), hashes.get(it["att_index"])
+                    same = c.execute("SELECT dkey FROM media WHERE fhash=? LIMIT 1", (fhash,)).fetchone() if fhash else None
+                    same = same or c.execute("SELECT dkey FROM media WHERE nkey=? LIMIT 1", (nkey,)).fetchone()
                     c.execute("INSERT INTO media(email_id, kind, att_index, name, url, domain, size, content_type, "
-                              "context, description, search, received_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                              "context, description, search, received_at, nkey, dkey, fhash) "
+                              "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                               (e["id"], it["kind"], it["att_index"], it["name"], it["url"], it["domain"], it["size"],
-                               it["content_type"], it["context"], note, search, e["received_at"]))
+                               it["content_type"], it["context"], note, search, e["received_at"], nkey,
+                               same["dkey"] if same else nkey, fhash))
                 if self.fts:
                     files = " ".join(it["name"] or it["domain"] for it in items)
                     c.execute("DELETE FROM emails_fts WHERE rowid=?", (e["id"],))
@@ -735,9 +759,58 @@ class Database:
         c.execute("UPDATE media SET description=?, search=search || ' ' || ? WHERE email_id=? AND " + where,
                   (note, note.lower(), eid, value))
 
+    def apply_muted(self, old: Sequence[str], new: Sequence[str]) -> dict:
+        """Серый список изменился: вложения новых «серых» отправителей убираем из раздела, вычеркнутых — разбираем заново."""
+        from .mail_source import sender_matches
+        with self.conn() as c:
+            senders = [r["s"] for r in c.execute("SELECT DISTINCT lower(sender) s FROM emails")]
+        muted = [s for s in senders if sender_matches(s, new) and not sender_matches(s, old)]
+        freed = [s for s in senders if sender_matches(s, old) and not sender_matches(s, new)]
+        removed = 0
+        with self.conn() as c:
+            for i in range(0, len(muted), 500):
+                part = muted[i:i + 500]
+                removed += c.execute("DELETE FROM media WHERE email_id IN (SELECT id FROM emails WHERE lower(sender) IN "
+                                     "({}))".format(",".join("?" * len(part))), part).rowcount
+            for i in range(0, len(freed), 500):
+                part = freed[i:i + 500]
+                c.execute("UPDATE emails SET media_v=0 WHERE lower(sender) IN ({})".format(",".join("?" * len(part))), part)
+        return {"removed": removed, "restored_senders": len(freed)}
+
+    def set_media_hash(self, eid: int, index: int, fhash: str) -> None:
+        """Хэш скачанного вложения. Если такое же содержимое уже было под другим именем — склеиваем группы."""
+        with self.conn() as c:
+            row = c.execute("SELECT id, dkey, fhash FROM media WHERE email_id=? AND att_index=?", (eid, index)).fetchone()
+            if not row or row["fhash"] == fhash:
+                return
+            c.execute("UPDATE media SET fhash=? WHERE id=?", (fhash, row["id"]))
+            other = c.execute("SELECT dkey FROM media WHERE fhash=? AND dkey<>? LIMIT 1", (fhash, row["dkey"])).fetchone()
+            if other:
+                c.execute("UPDATE media SET dkey=? WHERE dkey=?", (other["dkey"], row["dkey"]))
+
+    def media_copies(self, media_id: int, hidden: Sequence[str] = ()) -> List[dict]:
+        """Все письма с тем же файлом или ссылкой, от первого к последнему."""
+        gone = [GONE] + [h for h in hidden if h]
+        with self.conn() as c:
+            row = c.execute("SELECT dkey FROM media WHERE id=?", (media_id,)).fetchone()
+            if not row:
+                return []
+            rows = c.execute(
+                "SELECT m.id, m.email_id, m.att_index, m.name, m.size, m.content_type, m.received_at, e.subject, e.sender, "
+                "e.sender_name, e.folder FROM media m JOIN emails e ON e.id = m.email_id WHERE m.dkey=? AND "
+                "COALESCE(e.folder, '') NOT IN ({}) ORDER BY m.received_at, m.id LIMIT 200".format(",".join("?" * len(gone))),
+                [row["dkey"]] + gone).fetchall()
+        out, seen = [], set()
+        for r in rows:  # одно письмо — одна строка, даже если файл приложен в нём дважды
+            if r["email_id"] not in seen:
+                seen.add(r["email_id"])
+                out.append(dict(r))
+        return out
+
     def list_media(self, kind: str, q: str = "", sender: str = "", conversation_id: str = "", email_id: int = 0,
                    excluded: Sequence[str] = (), hidden: Sequence[str] = (), limit: int = 60, offset: int = 0) -> dict:
-        """Вложения или ссылки, новые сверху. Одна и та же ссылка из цепочки — один раз, по первому письму с ней."""
+        """Вложения или ссылки, новые сверху. Повторы (тот же файл в ответах и пересылках, та же ссылка) — одной
+        строкой по первому письму, copies — в скольких письмах встречается."""
         gone = [GONE] + [h for h in hidden if h]
         where = ["COALESCE(e.folder, '') NOT IN ({})".format(",".join("?" * len(gone)))]
         args: list = list(gone)
@@ -760,20 +833,23 @@ class Database:
         base = " FROM media m JOIN emails e ON e.id = m.email_id WHERE " + " AND ".join(where)
         with self.conn() as c:
             counts = {r["kind"]: r["n"] for r in c.execute(
-                "SELECT m.kind, COUNT(DISTINCT CASE WHEN m.kind='link' THEN m.url ELSE m.id END) n" + base +
+                "SELECT m.kind, COUNT(DISTINCT m.dkey) n" + base +
                 " GROUP BY m.kind", args)}
             cols = ("m.id, m.kind, m.email_id, m.att_index, m.name, m.url, m.domain, m.size, m.content_type, m.context, "
                     "m.description, "
                     "e.subject, e.sender, e.sender_name, e.summary, e.category, e.conversation_id")
-            if kind == "link":
-                rows = c.execute("SELECT " + cols + ", MIN(m.received_at) AS received_at" + base +
-                                 " AND m.kind='link' GROUP BY m.url ORDER BY received_at DESC LIMIT ? OFFSET ?",
-                                 args + [limit, offset]).fetchall()
-            else:
-                rows = c.execute("SELECT " + cols + ", m.received_at" + base +
-                                 " AND m.kind=? ORDER BY m.received_at DESC, m.id DESC LIMIT ? OFFSET ?",
-                                 args + [kind, limit, offset]).fetchall()
-        return {"items": [dict(r) for r in rows], "total": counts.get(kind, 0),
+            # одна строка на группу: столбцы берутся из самого раннего письма (MIN — единственный min/max в запросе)
+            rows = c.execute("SELECT " + cols + ", MIN(m.received_at) AS received_at, COUNT(DISTINCT m.email_id) AS copies, "
+                             "(SELECT x.description FROM media x WHERE x.dkey = m.dkey AND x.description <> '' LIMIT 1) "
+                             "AS any_description" + base + " AND m.kind=? GROUP BY m.dkey "
+                             "ORDER BY received_at DESC LIMIT ? OFFSET ?", args + [kind, limit, offset]).fetchall()
+        items = []
+        for r in rows:
+            it = dict(r)
+            it["description"] = it["description"] or it.pop("any_description") or ""
+            it.pop("any_description", None)
+            items.append(it)
+        return {"items": items, "total": counts.get(kind, 0),
                 "counts": {k: counts.get(k, 0) for k in MEDIA_KINDS}}
 
     def media_pending(self) -> int:
