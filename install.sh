@@ -29,17 +29,53 @@ say() { printf '\n==> %s\n' "$*"; }
 warn() { printf 'Внимание: %s\n' "$*" >&2; }
 die() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
 
-# Доменное имя бывает вида DOMAIN\user или user@domain, каталог называется просто user.
+# Рабочая папка в /home/work. Её имя не всегда совпадает с логином (DOMAIN\user, user@domain или другой логин),
+# поэтому ищем и свою папку там. Пусто — не нашли однозначно, нужен --root.
 default_root() {
-    local name
+    local name d owned=()
     name=$(id -un)
     name=${name##*\\}
     name=${name%%@*}
-    if [ -d "/home/work/$name" ]; then
+    if [ -d "/home/work/$name" ] && [ -w "/home/work/$name" ]; then
         printf '%s' "/home/work/$name"
-    else
-        printf '%s' "$HOME/gigacode-mail"
+        return
     fi
+    if [ -d /home/work ]; then
+        for d in /home/work/*/; do
+            [ -O "$d" ] && [ -w "$d" ] && owned+=("${d%/}")
+        done
+        [ ${#owned[@]} = 1 ] && printf '%s' "${owned[0]}"
+        return  # в /home/work несколько своих папок или ни одной: пусть укажут --root
+    fi
+    printf '%s' "$HOME/gigacode-mail"
+}
+
+# Где уже стоит сервис: папки из файлов systemd. Обновление и повторный запуск идут туда же,
+# иначе сервис переключился бы на новую пустую копию и почта выглядела бы пропавшей.
+PREV_MAIL="" PREV_GIGA="" PREV_ENV="" PREV_WORKDIR="" PREV_CMD=""
+read_installed() {
+    local mail_unit=$UNIT_DIR/mailbot.service giga_unit=$UNIT_DIR/gigacode-serve.service lines
+    [ -f "$mail_unit" ] || return 0
+    PREV_MAIL=$(sed -n 's/^WorkingDirectory=//p' "$mail_unit" | head -n 1)
+    PREV_ENV=$(sed -n 's/^EnvironmentFile=-\{0,1\}//p' "$mail_unit" | head -n 1)
+    PREV_ENV=${PREV_ENV%/*}
+    [ -f "$giga_unit" ] || return 0
+    PREV_GIGA=$(sed -n 's/^WorkingDirectory=//p' "$giga_unit" | head -n 1)
+    # --workdir и --cmd из строки запуска агента; кавычки там как у unit_quote
+    lines=$(python3 - "$giga_unit" <<'PY' || true
+import shlex, sys
+line = next((l[len("ExecStart="):] for l in open(sys.argv[1], encoding="utf-8") if l.startswith("ExecStart=")), "")
+try:
+    args = [a.replace("%%", "%").replace("$$", "$") for a in shlex.split(line)]
+except ValueError:
+    args = []
+for key in ("--workdir", "--cmd"):
+    i = args.index(key) + 1 if key in args else len(args)
+    print(args[i].replace("\n", " ") if i < len(args) else "")
+PY
+)
+    PREV_WORKDIR=$(printf '%s\n' "$lines" | sed -n 1p)
+    PREV_CMD=$(printf '%s\n' "$lines" | sed -n 2p)
 }
 
 # Кавычки для ExecStart: у systemd свои спецсимволы % и $.
@@ -222,19 +258,38 @@ main() {
 
     local self_dir mail_dir giga_dir origin
     self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-    if [ -f "$self_dir/mailbot/__main__.py" ]; then
+    read_installed
+    if [ -n "$PREV_MAIL" ] && [ -f "$PREV_MAIL/mailbot/__main__.py" ] && [ -z "$ROOT" ]; then
+        # сервис уже стоит: работаем с его папками, откуда бы ни запустили скрипт
+        mail_dir=$PREV_MAIL
+        ROOT=$(dirname "$PREV_MAIL")
+        [ "$self_dir" = "$PREV_MAIL" ] || echo "Сервис работает из $PREV_MAIL — обновляю его, а не копию в $self_dir"
+        WORKDIR=${WORKDIR:-$PREV_WORKDIR}
+        GIGACODE_CMD=${GIGACODE_CMD:-$PREV_CMD}
+        origin=$(git -C "$mail_dir" remote get-url origin 2>/dev/null || true)
+        GIT_BASE=${GIT_BASE:-${origin%/*}}
+    elif [ -f "$self_dir/mailbot/__main__.py" ]; then
         mail_dir=$self_dir
         ROOT=${ROOT:-$(dirname "$self_dir")}
         origin=$(git -C "$self_dir" remote get-url origin 2>/dev/null || true)
         GIT_BASE=${GIT_BASE:-${origin%/*}}
     else
         ROOT=${ROOT:-$(default_root)}
+        [ -n "$ROOT" ] || die "не понял, какая папка в /home/work ваша: укажите --root /home/work/<папка>"
         mail_dir=$ROOT/mail-tools
     fi
-    mkdir -p "$ROOT"
+    mkdir -p "$ROOT" || die "нет прав на $ROOT: укажите --root с папкой, куда вы можете писать"
     ROOT=$(cd "$ROOT" && pwd)
     giga_dir=$ROOT/gigacode
     ENV_DIR=$ROOT/config
+    if [ "$mail_dir" = "$PREV_MAIL" ]; then
+        giga_dir=${PREV_GIGA:-$giga_dir}
+        ENV_DIR=${PREV_ENV:-$ENV_DIR}
+    elif [ -n "$PREV_MAIL" ]; then
+        warn "сервис переключается с $PREV_MAIL на $mail_dir. Письма и настройки из $PREV_MAIL/mail_data не переносятся"
+    fi
+    echo "Код: $mail_dir и $giga_dir"
+    echo "Данные почты: $mail_dir/mail_data"
     WORKDIR=${WORKDIR:-$ROOT/workspace}
     mkdir -p "$WORKDIR"
     WORKDIR=$(cd "$WORKDIR" && pwd)
