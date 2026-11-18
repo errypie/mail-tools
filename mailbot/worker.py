@@ -369,6 +369,21 @@ class Worker:
                                           s["work_start"], s["work_end"], 6, horizon)
         return {"people": busy, "me": me, "slots": slots, "work_start": s["work_start"], "work_end": s["work_end"]}
 
+    def shared_events(self, emails: List[str], start: datetime, end: datetime) -> dict:
+        """Чужие календари: {адрес: {"mode", "events"} или {"error"}}. Люди запрашиваются параллельно."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        src = self.calendar()
+
+        def one(email):
+            try:
+                return src.shared_events(email, start, end)
+            except Exception as e:  # noqa: BLE001 — один недоступный календарь не мешает остальным
+                return {"error": "{}: {}".format(type(e).__name__, e)[:300]}
+
+        with ThreadPoolExecutor(max_workers=min(4, len(emails) or 1)) as pool:
+            return dict(zip(emails, pool.map(one, emails)))
+
     def rooms(self) -> List[dict]:
         at, cached = self._rooms
         if cached is not None and time.time() - at < ROOMS_TTL:

@@ -184,6 +184,7 @@ DEFAULT_SETTINGS = {
     "media_exclude_domains": [],
     "backfill_days": 180,
     "media_muted_senders": [],
+    "shared_calendars": [],  # чужие календари в разделе «Календарь»: [{"email", "name", "color", "on"}]
 }
 
 CATEGORY_ENV_FIELDS = ("cwd", "files", "include_dirs", "approval_mode", "permission", "model")

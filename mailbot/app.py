@@ -46,11 +46,31 @@ SETTING_KEYS = {"ews_server": str, "ews_email": str, "ews_auth": str, "ca_bundle
                 "entities": list, "calendar_auto": bool, "work_start": str, "work_end": str,
                 "free_slots_count": int, "invite_prompt": str, "media_exclude_domains": list,
                 "backfill_days": int, "media_muted_senders": list}
+MAX_SHARED_CALENDARS = 20
+COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
 MAX_CALENDAR_DAYS = 62
 SECRET_KEYS = ("ews_username", "ews_password", "gigacode_token")
 CATEGORY_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 ENTITY_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,31}$")
+
+
+def _shared_calendars(values) -> list:
+    """Список чужих календарей: адрес, имя, цвет и показан ли он сейчас; без повторов."""
+    out, seen = [], set()
+    for v in values if isinstance(values, list) else []:
+        if not isinstance(v, dict):
+            continue
+        email = str(v.get("email") or "").strip().lower()
+        if not EMAIL_RE.match(email) or email in seen:
+            continue
+        seen.add(email)
+        color = str(v.get("color") or "")
+        out.append({"email": email, "name": str(v.get("name") or "").strip()[:100],
+                    "color": color if COLOR_RE.match(color) else "#7e57c2", "on": v.get("on") is not False})
+    if len(out) > MAX_SHARED_CALENDARS:
+        raise HttpError(400, "Чужих календарей — не больше {}".format(MAX_SHARED_CALENDARS))
+    return out
 
 
 def _sender_rules(values) -> list:
@@ -806,7 +826,8 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(502, "Календарь недоступен: {}: {}".format(type(e).__name__, e))
         s = self.ctx.db.settings()
         self._json(200, {"events": events, "start": first.isoformat(), "days": days,
-                         "work_start": s["work_start"], "work_end": s["work_end"], "colors": self._colors()})
+                         "work_start": s["work_start"], "work_end": s["work_end"], "colors": self._colors(),
+                         "shared": s.get("shared_calendars") or []})
 
     def _cal(self, fn, what: str):
         try:
@@ -888,6 +909,26 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(400, "Неверные адреса или их слишком много")
         self._json(200, self._cal(lambda: self.ctx.worker.free_busy(emails, first, days, duration),
                                   "Занятость недоступна"))
+
+    @route("PUT", "/api/calendar/shared")
+    def save_shared_calendars(self):
+        items = _shared_calendars(self._body().get("calendars"))
+        self.ctx.db.set_settings({"shared_calendars": items})
+        self._json(200, {"calendars": items})
+
+    @route("GET", "/api/calendar/shared")
+    def shared_calendars(self):
+        try:
+            emails = [e.strip().lower() for e in self.query.get("emails", "").split(",") if e.strip()]
+            first = date.fromisoformat(self.query.get("start") or date.today().isoformat())
+        except ValueError:
+            raise HttpError(400, "start — дата ГГГГ-ММ-ДД")
+        if not emails or len(emails) > MAX_SHARED_CALENDARS or any(not EMAIL_RE.match(e) for e in emails):
+            raise HttpError(400, "Неверные адреса или их слишком много")
+        days = self._qint("days", 7, 1, 42)  # больше 42 дней Exchange занятость не отдаёт
+        begin = datetime.combine(first, dtime(0), local_tz())
+        self._json(200, {"people": self._cal(lambda: self.ctx.worker.shared_events(emails, begin, begin + timedelta(days=days)),
+                                             "Чужие календари недоступны")})
 
     @route("GET", "/api/calendar/rooms")
     def rooms(self):

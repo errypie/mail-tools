@@ -380,7 +380,9 @@ class ExchangeSource(ExchangeOffice):
                 continue
             ref = ReferenceItemId(id=target.id, changekey=target.changekey)
             if not notify:
-                saved = cls(account=self.account, reference_item_id=ref).send(message_disposition=SAVE_ONLY)
+                # без отправки Exchange сохраняет ответ письмом: папку нужно указать, иначе exchangelib откажет
+                saved = cls(account=self.account, folder=self.account.drafts,
+                            reference_item_id=ref).send(message_disposition=SAVE_ONLY)
                 self._drop_reply_drafts(saved)
                 return {"proposed": False}
             kwargs = {"body": Body(reply)} if reply else {}
@@ -472,6 +474,30 @@ class ExchangeSource(ExchangeOffice):
         DeclineItem(account=self.account, reference_item_id=ReferenceItemId(id=item.id, changekey=item.changekey),
                     **({"body": Body(message)} if message else {})).send()
         return "declined"
+
+    def shared_events(self, email: str, start: datetime, end: datetime) -> dict:
+        """Чужой календарь, как «Открыть общий календарь» в Outlook.
+        Если владелец дал доступ к календарю — все встречи (mode "full"). Иначе — занятость с тем, что разрешено
+        в организации: тема и место ("details") или только «занят» ("busy")."""
+        from exchangelib.folders import Calendar, SingleFolderQuerySet
+        from exchangelib.properties import DistinguishedFolderId, Mailbox
+
+        try:
+            folder = SingleFolderQuerySet(account=self.account, folder=DistinguishedFolderId(
+                id=Calendar.DISTINGUISHED_FOLDER_ID, mailbox=Mailbox(email_address=email))).resolve()
+            if isinstance(folder, Exception):
+                raise folder
+            view = folder.view(start=_ews_utc(start), end=_ews_utc(end)).only(*self.EVENT_FIELDS, "sensitivity")
+            events = []
+            for e in view:
+                d = self._event_dict(e)
+                if (getattr(e, "sensitivity", "") or "") in ("Private", "Confidential"):
+                    d.update(subject="", location="", private=True)  # частную встречу владельца не раскрываем
+                events.append(_shared_event(d))
+            return {"mode": "full", "events": sorted(events, key=lambda x: x["start"])}
+        except Exception:  # noqa: BLE001 — доступа к календарю нет: остаётся занятость
+            pass
+        return _from_free_busy(self.free_busy([email], start, end).get(email) or {"error": "Нет ответа"})
 
     def free_busy(self, emails: Sequence[str], start: datetime, end: datetime) -> dict:
         """Занятость людей и переговорных: {адрес: {"blocks": [...]}} или {"error": текст}."""
@@ -970,6 +996,20 @@ class FakeSource(FakeOffice):
             return "cancelled"
         return "deleted"
 
+    def shared_events(self, email: str, start: datetime, end: datetime) -> dict:
+        """Тест: первому из адресной книги доступ открыт целиком, второму видны темы, остальным — только занятость."""
+        names = [e for _, e in self.DIRECTORY]
+        res = _from_free_busy(self.free_busy([email], start, end)[email])
+        if "error" in res or email not in names[:2]:
+            return res
+        topics = ["Планёрка", "Ревью кода", "Встреча с заказчиком", "Обед", "Разбор инцидента", "1:1 с руководителем"]
+        for i, e in enumerate(res["events"]):
+            e.update(subject=topics[(i + len(email)) % len(topics)], location="Переговорная {}".format(200 + i % 5))
+        res["mode"] = "full" if email == names[0] else "details"
+        if res["mode"] == "full" and res["events"]:
+            res["events"][0].update(subject="", private=True, location="")
+        return res
+
     def free_busy(self, emails: Sequence[str], start: datetime, end: datetime) -> dict:
         """Своя занятость — из тестового календаря, переговорных — по встречам с ними,
         остальных из адресной книги — выдуманная, но одинаковая при каждом запросе."""
@@ -1193,6 +1233,25 @@ def _inline_images(item) -> dict:
         except Exception:  # noqa: BLE001 — без картинки описание всё равно покажем
             continue
     return out
+
+
+SHARED_FIELDS = ("subject", "start", "end", "all_day", "location", "organizer_name", "free_busy", "recurring",
+                 "is_meeting", "cancelled", "private")
+
+
+def _shared_event(d: dict) -> dict:
+    """Встреча из чужого календаря: только то, что нужно для показа, без id — она открывается только для чтения."""
+    return {k: d.get(k, False if k in ("all_day", "recurring", "is_meeting", "cancelled", "private") else "")
+            for k in SHARED_FIELDS}
+
+
+def _from_free_busy(fb: dict) -> dict:
+    if "error" in fb:
+        return {"error": fb["error"]}
+    events = [_shared_event({"subject": b.get("subject") or "", "location": b.get("location") or "",
+                             "start": b["start"], "end": b["end"], "free_busy": b.get("busy_type") or "Busy"})
+              for b in fb.get("blocks", []) if b.get("busy_type") != "Free"]
+    return {"mode": "details" if any(e["subject"] for e in events) else "busy", "events": events}
 
 
 def _ews_utc(value: datetime):
