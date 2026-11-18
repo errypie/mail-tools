@@ -198,7 +198,8 @@ class ExchangeOffice:
     # автоответ
     def get_oof(self) -> dict:
         s = self.account.oof_settings
-        iso = lambda v: v.astimezone(timezone.utc).isoformat(timespec="seconds") if v else None  # noqa: E731
+        # через timestamp: EWSDateTime.astimezone принимает только пояса exchangelib
+        iso = lambda v: datetime.fromtimestamp(v.timestamp(), timezone.utc).isoformat(timespec="seconds") if v else None  # noqa: E731
         return {"state": s.state, "external_audience": s.external_audience or "None",
                 "start": iso(s.start), "end": iso(s.end),
                 "internal_reply": _plain(s.internal_reply), "external_reply": _plain(s.external_reply)}
@@ -211,7 +212,8 @@ class ExchangeOffice:
         start, end = oof["start"] or now, oof["end"] or now + timedelta(days=1)
         if end <= now:
             start, end = now, now + timedelta(days=1)  # для «включён» и «выключен» сроки не важны, но EWS их требует
-        conv = lambda v: EWSDateTime.from_datetime(v.astimezone(timezone.utc)).astimezone(UTC)  # noqa: E731
+        # через timestamp: у времени из Exchange astimezone(timezone.utc) падает с ошибкой про EWSTimeZone
+        conv = lambda v: EWSDateTime.from_datetime(datetime.fromtimestamp(v.timestamp(), timezone.utc)).astimezone(UTC)  # noqa: E731
         self.account.oof_settings = OofSettings(
             state=oof["state"], external_audience=oof["external_audience"], start=conv(start), end=conv(end),
             internal_reply=oof["internal_reply"] or " ", external_reply=oof["external_reply"] or " ")

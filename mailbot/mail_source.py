@@ -335,8 +335,8 @@ class ExchangeSource(ExchangeOffice):
                 item.end = EWSDate.from_date((spec["end"] - timedelta(days=1)).date())  # exchangelib прибавит день
             else:
                 tz = self.account.default_timezone
-                item.start = EWSDateTime.from_datetime(spec["start"].astimezone(timezone.utc)).astimezone(tz)
-                item.end = EWSDateTime.from_datetime(spec["end"].astimezone(timezone.utc)).astimezone(tz)
+                item.start = EWSDateTime.from_datetime(_py_utc(spec["start"])).astimezone(tz)
+                item.end = EWSDateTime.from_datetime(_py_utc(spec["end"])).astimezone(tz)
             item.is_all_day = all_day
             fields += ["start", "end", "is_all_day"]
         for key, attr in (("location", "location"), ("free_busy", "legacy_free_busy_status")):
@@ -445,9 +445,11 @@ class ExchangeSource(ExchangeOffice):
             raise MailError("Это чужая встреча: менять её может только организатор. Можно поменять напоминание")
         spec = dict(spec)
         if item is not occurrence and "start" in spec:
-            shift = spec["start"] - occurrence.start
-            length = spec["end"] - spec["start"]
-            spec["start"] = item.start + shift
+            # время из Exchange (EWSDateTime) переводим в обычное: его astimezone не принимает пояса Python
+            shift = _py_utc(spec["start"]) - _py_utc(occurrence.start)
+            length = _py_utc(spec["end"]) - _py_utc(spec["start"])
+            first = item.start if isinstance(item.start, datetime) else datetime.combine(item.start, time(0), local_tz())
+            spec["start"] = _py_utc(first) + shift
             spec["end"] = spec["start"] + length
         if item.type in ("Occurrence", "Exception"):
             spec.pop("recurrence", None)  # у отдельного повтора правила нет
@@ -504,8 +506,8 @@ class ExchangeSource(ExchangeOffice):
         from exchangelib import EWSDateTime
 
         tz = self.account.default_timezone
-        s = EWSDateTime.from_datetime(start.astimezone(timezone.utc)).astimezone(tz)
-        e = EWSDateTime.from_datetime(end.astimezone(timezone.utc)).astimezone(tz)
+        s = EWSDateTime.from_datetime(_py_utc(start)).astimezone(tz)
+        e = EWSDateTime.from_datetime(_py_utc(end)).astimezone(tz)
         views = self.account.protocol.get_free_busy_info([(a, "Required", False) for a in emails], s, e,
                                                          merged_free_busy_interval=30, requested_view="Detailed")
         out = {}
@@ -658,7 +660,7 @@ def _rule_to_ews(rule: dict, first):
     from exchangelib.recurrence import (AbsoluteMonthlyPattern, AbsoluteYearlyPattern, DailyPattern, Recurrence,
                                         WeeklyPattern)
 
-    day = first.astimezone(local_tz()).date() if isinstance(first, datetime) else first
+    day = _py_utc(first).astimezone(local_tz()).date() if isinstance(first, datetime) else first
     pattern = {"daily": lambda: DailyPattern(interval=rule["interval"]),
                "weekly": lambda: WeeklyPattern(interval=rule["interval"], weekdays=[d + 1 for d in rule["days"]],
                                                first_day_of_week=1),
@@ -1254,10 +1256,18 @@ def _from_free_busy(fb: dict) -> dict:
     return {"mode": "details" if any(e["subject"] for e in events) else "busy", "events": events}
 
 
+def _py_utc(value):
+    """Обычный datetime в UTC — и из datetime Python, и из EWSDateTime: у EWSDateTime astimezone принимает только
+    пояса exchangelib, а timezone.utc или местный пояс Python даёт ошибку InvalidTypeError про EWSTimeZone."""
+    if isinstance(value, datetime):
+        return datetime.fromtimestamp(value.timestamp(), timezone.utc)
+    return value
+
+
 def _ews_utc(value: datetime):
     """EWSDateTime в UTC. Местный пояс Python отдаёт как сокращение (MSK), которого exchangelib не знает."""
     from exchangelib import EWSDateTime, UTC
-    return EWSDateTime.from_datetime(value.astimezone(timezone.utc)).astimezone(UTC)
+    return EWSDateTime.from_datetime(_py_utc(value)).astimezone(UTC)
 
 
 def fetch_since(watermark: Optional[str], initial_days: int) -> datetime:
