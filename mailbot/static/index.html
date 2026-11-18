@@ -364,7 +364,7 @@ nav button.add { color: var(--accent); }
 .replyText { white-space: pre-wrap; font-size: 14px; background: var(--code); border-radius: 8px; padding: 8px 10px; margin-top: 8px; overflow-wrap: anywhere; }
 .inviteForm .suggest { margin-top: 10px; }
 .calView { flex: 1; min-width: 0; min-height: 0; display: flex; position: relative; background: var(--panel); }
-.calSide { width: 250px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 14px 12px; overflow-y: auto; background: var(--side); }
+.calSide { width: 250px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 14px 12px; overflow-y: auto; overflow-x: hidden; background: var(--side); box-sizing: border-box; }
 .calSide > .btn { width: 100%; padding: 10px; display: flex; align-items: center; justify-content: center; gap: 8px; }
 .mini { margin-top: 16px; user-select: none; }
 .miniHead { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
@@ -378,21 +378,23 @@ nav button.add { color: var(--accent); }
 .miniGrid button.today { background: var(--accent); color: var(--accent-text); font-weight: 600; border-radius: 50%; }
 .shCal { margin-top: 16px; display: grid; gap: 2px; font-size: 13px; }
 .shCal .shHead { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: 0 4px 4px; }
-.shRow { display: flex; align-items: center; gap: 8px; padding: 4px; border-radius: 8px; }
+.shRow { display: flex; align-items: flex-start; gap: 6px; padding: 5px 4px; border-radius: 8px; }
 .shRow:hover { background: var(--panel); }
-.shRow label { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.shRow input { width: 16px; height: 16px; margin: 0; flex-shrink: 0; }
-.shRow .nm { min-width: 0; }
-.shRow .nm div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.shRow .nm small { display: block; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shRow label { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+.shRow input { width: 16px; height: 16px; margin: 1px 0 0; flex-shrink: 0; }
+.shRow .nm { flex: 1; min-width: 0; }
+.shRow .nm div { line-height: 1.3; overflow-wrap: anywhere; }  /* длинное имя — переносом, а не прокруткой вбок */
+.shRow .nm small { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.3; overflow-wrap: anywhere; }
 .shRow .nm small.bad { color: var(--danger); }
-.shRow .x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 4px; visibility: hidden; }
-.shRow:hover .x, .shRow .x:focus { visibility: visible; }
+.shRow .x { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0; width: 22px; height: 22px; margin-top: -2px;
+  display: grid; place-items: center; border-radius: 6px; flex-shrink: 0; opacity: .7; }
+.shRow .x svg { width: 15px; height: 15px; }
+.shRow .x:hover, .shRow .x:focus-visible { opacity: 1; color: var(--danger); background: var(--danger-bg); }
 .shAdd { position: relative; margin-top: 4px; }
 .shAdd input { width: 100%; box-sizing: border-box; }
 .shSug { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px); background: var(--panel); border: 1px solid var(--border);
   border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
-.shSug button { display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--text); padding: 7px 10px; cursor: pointer; font: inherit; font-size: 13px; }
+.shSug button { display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--text); padding: 7px 10px; cursor: pointer; font: inherit; font-size: 13px; overflow-wrap: anywhere; }
 .shSug button:hover, .shSug button.on { background: var(--soft); }
 .shSug small { display: block; color: var(--muted); font-size: 11.5px; }
 .evb .who, .cm-ev .who { font-weight: 600; }
@@ -402,7 +404,7 @@ nav button.add { color: var(--accent); }
 .shCal .seg button { border: 0; background: var(--panel); color: var(--muted); font: inherit; font-size: 11.5px; font-weight: 500; padding: 3px 8px; cursor: pointer; }
 .shCal .seg button + button { border-left: 1px solid var(--border); }
 .shCal .seg button.on { background: var(--accent); color: var(--accent-text); }
-.shRow .sw { width: 14px; height: 14px; border-radius: 4px; border: 0; padding: 0; cursor: pointer; flex-shrink: 0; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .15); }
+.shRow .sw { width: 14px; height: 14px; margin-top: 2px; border-radius: 4px; border: 0; padding: 0; cursor: pointer; flex-shrink: 0; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .15); }
 .shPal { position: fixed; z-index: 90; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
   padding: 10px; display: grid; grid-template-columns: repeat(6, 24px); gap: 8px; }
 .shPal button { width: 24px; height: 24px; border-radius: 6px; border: 0; padding: 0; cursor: pointer; position: relative; }
@@ -418,8 +420,9 @@ nav button.add { color: var(--accent); }
 .paneHead { display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 13px; font-weight: 600;
   border-top: 3px solid var(--pane); background: color-mix(in srgb, var(--pane) 10%, var(--panel)); white-space: nowrap; overflow: hidden; }
 .paneHead small { color: var(--muted); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
+.paneHead b { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .legend { margin-top: 18px; font-size: 12.5px; color: var(--muted); display: grid; gap: 7px; }
-.legend div { display: flex; align-items: center; gap: 8px; }
+.legend div { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; min-width: 0; }
 .legend i { width: 22px; height: 12px; border-radius: 3px; flex-shrink: 0; }
 .calMain { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .calBar { display: flex; align-items: center; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
@@ -507,7 +510,7 @@ body.soloEv .evPanel .epBody > * { max-width: 1100px; }
 .notifyBtn { margin-top: 12px; padding-left: 0; text-align: left; color: var(--accent); }
 .dlgBack { position: fixed; inset: 0; background: rgba(0, 0, 0, .34); z-index: 80; display: grid; place-items: center; padding: 16px; }
 .dlg { background: var(--panel); border-radius: 14px; padding: 20px 22px; width: min(440px, 100%); box-shadow: 0 18px 50px rgba(0, 0, 0, .3); }
-.dlg h3 { margin: 0 0 8px; font-size: 17px; line-height: 1.35; }
+.dlg h3 { margin: 0 0 8px; font-size: 17px; line-height: 1.35; overflow-wrap: anywhere; }
 .dlg p { margin: 0; color: var(--muted); font-size: 14px; white-space: pre-line; }
 .dlg .actions { margin-top: 18px; }
 .evForm .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -3347,7 +3350,15 @@ function renderShared() {
       const sw = el("button", "sw"); sw.type = "button"; sw.style.background = color; sw.title = "Цвет календаря";
       sw.onclick = () => colorMenu(sw, color, onColor); r.appendChild(sw);
     }
-    if (onRemove) { const x = el("button", "x", "×"); x.type = "button"; x.title = "Убрать календарь из списка"; x.onclick = onRemove; r.appendChild(x); }
+    if (onRemove) {
+      const x = el("button", "x"); x.type = "button"; x.innerHTML = ICON.trash; x.title = "Удалить календарь из списка";
+      x.setAttribute("aria-label", "Удалить календарь " + title);
+      x.onclick = async () => {
+        if (await choose("Удалить календарь «" + title + "»?", "Он пропадёт из списка. Добавить его снова можно в любой момент.",
+          [{ label: "Удалить", cls: "danger", v: true }])) onRemove();
+      };
+      r.appendChild(x);
+    }
     box.appendChild(r);
   };
   row(getComputedStyle(document.body).getPropertyValue("--accent").trim(), "Мой календарь", "", cal.mine,
@@ -3446,7 +3457,7 @@ function renderCal() {
   panes.forEach((p) => {
     const pane = el("div", "calPane"), head = el("div", "paneHead"), g = el("div", "calGrid");
     pane.style.setProperty("--pane", p.color); pane.dataset.owner = p.key;
-    head.append(document.createTextNode(p.name)); if (p.sub) head.appendChild(el("small", "", p.sub));
+    head.appendChild(el("b", "", p.name)); head.title = p.name; if (p.sub) head.appendChild(el("small", "", p.sub));
     pane.append(head, g); root.appendChild(pane);
     cal.pane = p.key;
     if (cal.view === "month") renderMonth(start, g); else renderWeek(start, days, g, keep);
