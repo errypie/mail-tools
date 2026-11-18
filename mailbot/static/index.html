@@ -466,7 +466,7 @@ body.soloEv .evPanel .epBody > * { max-width: 1100px; }
 .dlgBack { position: fixed; inset: 0; background: rgba(0, 0, 0, .34); z-index: 80; display: grid; place-items: center; padding: 16px; }
 .dlg { background: var(--panel); border-radius: 14px; padding: 20px 22px; width: min(440px, 100%); box-shadow: 0 18px 50px rgba(0, 0, 0, .3); }
 .dlg h3 { margin: 0 0 8px; font-size: 17px; line-height: 1.35; }
-.dlg p { margin: 0; color: var(--muted); font-size: 14px; }
+.dlg p { margin: 0; color: var(--muted); font-size: 14px; white-space: pre-line; }
 .dlg .actions { margin-top: 18px; }
 .evForm .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .evForm .check { flex-direction: row; justify-content: flex-start; gap: 10px; font-size: 14px; width: fit-content; }
@@ -618,6 +618,33 @@ nav button.newMail:hover { background: var(--accent); filter: brightness(1.06); 
 .cmpEditor:empty::before { content: attr(data-placeholder); color: var(--muted); }
 .cmpEditor p { margin: 0 0 10px; }
 .cmpEditor a { color: var(--info); }
+.cmpEditor img { max-width: 100%; height: auto; border-radius: 4px; }
+.cmpEditor img.uploading { opacity: .45; }
+.compose { position: relative; }
+.cmpEditor img[data-cid] { cursor: pointer; }
+.cmpEditor img.sel { outline: 2px solid var(--accent); outline-offset: 2px; }
+.imgBar { position: absolute; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); max-width: calc(100% - 16px); }
+.imgBar .seg, .imgEd .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.imgBar .seg button, .imgEd .seg button { border: 0; background: transparent; color: var(--text); padding: 5px 10px; cursor: pointer; font: inherit; font-size: 13px; }
+.imgBar .seg button + button, .imgEd .seg button + button { border-left: 1px solid var(--border); }
+.imgBar .seg button.on, .imgEd .seg button.on { background: var(--accent); color: var(--accent-text); }
+.imgBar .dim { color: var(--muted); font-size: 12px; padding: 0 4px; }
+.imgBar .iconBtn, .imgEd .iconBtn { width: 30px; height: 30px; }
+.imgEd { background: var(--panel); border-radius: 14px; box-shadow: 0 18px 50px rgba(0, 0, 0, .3); width: min(1100px, 100%);
+  max-height: calc(100vh - 32px); display: flex; flex-direction: column; overflow: hidden; }
+.imgEd .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.imgEd .bar .grow { flex: 1; }
+.imgEd .sw { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--panel); outline: 1px solid var(--border); cursor: pointer; padding: 0; }
+.imgEd .sw.on { outline: 2px solid var(--accent); }
+.imgEd .stage { position: relative; flex: 1; min-height: 0; overflow: auto; display: grid; place-items: center; padding: 16px;
+  background: repeating-conic-gradient(var(--code) 0 25%, var(--panel) 0 50%) 0 0 / 16px 16px; }
+.imgEd .stage > div { position: relative; line-height: 0; }
+.imgEd canvas { max-width: 100%; max-height: calc(100vh - 170px); display: block; touch-action: none; }
+.imgEd canvas.over { position: absolute; inset: 0; width: 100%; height: 100%; max-height: none; cursor: crosshair; }
+.imgEd .txt { position: absolute; z-index: 2; background: rgba(255, 255, 255, .85); border: 1px dashed var(--accent); outline: 0;
+  padding: 2px 4px; font: 600 18px/1.2 var(--font); min-width: 120px; }
+.imgEd .hint { color: var(--muted); font-size: 13px; }
 .cmpEditor blockquote { margin: 0 0 0 8px; padding-left: 10px; border-left: 3px solid var(--border); color: var(--muted); }
 .cmpQuote { border-top: 1px solid var(--border); padding: 8px 14px 12px; }
 .cmpQuote summary { cursor: pointer; color: var(--muted); font-size: 13.5px; }
@@ -1882,7 +1909,8 @@ function renderDetail(m) {
   });
   const aiReply = el("button", "btn small ai", "Ответ от GigaCode"); aiReply.prepend(svgIcon("spark", "ico"));
   aiReply.title = "Черновик ответа от модели. Отправите его вы сами, после проверки";
-  aiReply.onclick = () => startCompose("reply", m.id, { ai: true });
+  aiReply.title = "Черновик ответа всем от модели. Отправите его вы сами, после проверки";
+  aiReply.onclick = () => startCompose("reply_all", m.id, { ai: true });
   acts.appendChild(aiReply);
   acts.appendChild(el("span", "spacer"));
   if (m.folder && m.folder !== mb.inbox && folderName(m.folder)) {
@@ -2264,6 +2292,9 @@ document.addEventListener("keydown", (e) => {
 const INVITE_ACTIONS = [["accept", "Принять"], ["tentative", "Под вопросом"], ["decline", "Отклонить"]];
 const INVITE_TEXT = { accept: "принять", tentative: "под вопросом", decline: "отклонить", none: "решить самому" };
 const RESP_OF = { accept: "Accept", tentative: "Tentative", decline: "Decline" };
+const INVITE_DONE = { accept: "принято", tentative: "под вопросом", decline: "отклонено" };
+// «Принять без ответа» — как «Не отправлять ответ» в Outlook: встреча в календаре принята, организатору ничего не уходит
+const SILENT_TITLE = "Встреча встанет в календарь как принятая, организатор ответа не получит — как «Не отправлять ответ» в Outlook";
 const RESPONSE_TEXT = { Accept: "принято", Tentative: "под вопросом", Decline: "отклонено", NoResponseReceived: "нет ответа",
   Unknown: "нет ответа", Organizer: "вы организатор" };
 const WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
@@ -2278,7 +2309,8 @@ function fmtRange(start, end, allDay) {
 function inviteTag(m) {
   const i = m.invite;
   if (i.kind === "cancel") return el("span", "tag", "встреча отменена");
-  if (m.invite_state === "sent") return el("span", "tag", "ответ отправлен");
+  const silent = m.invite_response ? m.invite_response.notify === false && m.invite_response.action : i.silent;
+  if (m.invite_state === "sent") return el("span", "tag", silent ? INVITE_DONE[silent] + " без ответа" : "ответ отправлен");
   if (m.invite_state === "sending") return el("span", "tag", "ответ отправляется");
   if (m.invite_state === "error") return el("span", "tag bad", "ответ не ушёл");
   const text = i.suggested && i.suggested !== "none" ? "встреча: " + INVITE_TEXT[i.suggested] + "?" : "приглашение";
@@ -2311,6 +2343,7 @@ function inviteCard(m) {
   if (!st && ["Accept", "Tentative", "Decline"].includes(inv.my_response)) c.appendChild(el("div", "meta", "В Outlook уже был ответ: " + RESPONSE_TEXT[inv.my_response]));
   if (st === "sent" || st === "sending") {
     c.appendChild(el("div", "okbox", st === "sending" ? "Ответ отправляется…"
+      : resp.notify === false ? "✓ " + INVITE_DONE[resp.action][0].toUpperCase() + INVITE_DONE[resp.action].slice(1) + " без ответа организатору" + (resp.by === "auto" ? ", автоматически" : "") + " · " + fmtTime(resp.at)
       : "✓ Отправлен ответ «" + INVITE_TEXT[resp.action] + "»" + (resp.by === "auto" ? " автоматически" : "") + " · " + fmtTime(resp.at)));
     if (resp.proposed) c.appendChild(el("div", "meta", (resp.proposed_sent === false ? "Exchange не принял новое время, оно есть только в тексте: " : "Предложено время: ") + fmtRange(resp.proposed.start, resp.proposed.end)));
     if (resp.reply) c.appendChild(el("div", "replyText", resp.reply));
@@ -2353,17 +2386,27 @@ function inviteCard(m) {
   t.oninput = () => save("reply", t.value);
   form.append(label, t);
   const a = el("div", "actions");
+  // модель советует принять — главная кнопка «Принять без ответа»: организатору обычно не нужно письмо «Принято»
+  const silentFirst = dec && dec.action === "accept";
+  const send = async (act, notify) => {
+    a.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+    try {
+      await api("POST", "/api/emails/" + m.id + "/invite", notify
+        ? { action: act, reply: t.value, propose: act === "accept" ? null : propose || null }
+        : { action: act, notify: false });
+      inviteDraft.delete(m.id); inviteEditing.delete(m.id);
+    } catch (e) { alert(e.message); }
+    detailSig = ""; listSig = ""; refreshDetail(); refresh();
+  };
+  const silent = el("button", "btn" + (silentFirst ? " primary" : ""), "Принять без ответа");
+  silent.title = SILENT_TITLE + ". Текст ниже не отправится";
+  silent.onclick = () => send("accept", false);
+  if (silentFirst) a.appendChild(silent);
   INVITE_ACTIONS.forEach(([act, text]) => {
-    const b = el("button", "btn" + (dec && dec.action === act ? " primary" : ""), text);
-    b.onclick = async () => {
-      a.querySelectorAll("button").forEach((x) => { x.disabled = true; });
-      try {
-        await api("POST", "/api/emails/" + m.id + "/invite", { action: act, reply: t.value, propose: act === "accept" ? null : propose || null });
-        inviteDraft.delete(m.id); inviteEditing.delete(m.id);
-      } catch (e) { alert(e.message); }
-      detailSig = ""; listSig = ""; refreshDetail(); refresh();
-    };
+    const b = el("button", "btn" + (dec && dec.action === act && !(silentFirst && act === "accept") ? " primary" : ""), text);
+    b.onclick = () => send(act, true);
     a.appendChild(b);
+    if (act === "accept" && !silentFirst) a.appendChild(silent);
   });
   form.appendChild(a);
   c.appendChild(form);
@@ -2382,12 +2425,15 @@ function parsePerson(p) {
 const personLabel = (p) => { const x = parsePerson(p); return x.name || x.email; };
 const validPerson = (p) => ADDR_RE.test(parsePerson(p).email);
 const KEEP_TAGS = new Set(["P", "BR", "DIV", "B", "STRONG", "I", "EM", "U", "UL", "OL", "LI", "A", "SPAN", "BLOCKQUOTE"]);
-function safeFragment(html) {
+function safeFragment(html, draftId) {
   // свой разбор вместо innerHTML: в DOM попадают только простые теги без атрибутов, кроме ссылок
+  // и картинок, вставленных в этот черновик (cid: на его же файл)
   const doc = new DOMParser().parseFromString(html || "", "text/html"), out = document.createDocumentFragment();
   const walk = (src, dst) => src.childNodes.forEach((n) => {
     if (n.nodeType === 3) { dst.appendChild(document.createTextNode(n.nodeValue)); return; }
     if (n.nodeType !== 1 || ["SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "TEMPLATE", "HEAD"].includes(n.tagName)) return;
+    const cid = n.tagName === "IMG" && draftId ? /^cid:([0-9a-f]{32})$/.exec(n.getAttribute("src") || "") : null;
+    if (cid) { dst.appendChild(inlineImg(draftId, cid[1])); return; }
     if (!KEEP_TAGS.has(n.tagName)) { walk(n, dst); return; }
     const e = document.createElement(n.tagName);
     const href = n.tagName === "A" ? n.getAttribute("href") || "" : "";
@@ -2396,6 +2442,11 @@ function safeFragment(html) {
   });
   walk(doc.body, out);
   return out;
+}
+function inlineImg(draftId, cid) {
+  const img = document.createElement("img");
+  img.src = "/api/drafts/" + draftId + "/inline/" + cid; img.dataset.cid = cid; img.alt = "";
+  return img;
 }
 const htmlText = (html) => new DOMParser().parseFromString(String(html || "").replace(/<br\s*\/?>|<\/(p|div|li|blockquote)>/gi, " $&"), "text/html")
   .body.textContent.replace(/\s+/g, " ").trim();  // пробел между абзацами, чтобы слова не слипались
@@ -2573,6 +2624,7 @@ function openCompose(d, opts = {}) {
   const renderAtt = (pending = []) => {
     attBox.textContent = "";
     c.draft.attachments.forEach((a, i) => {
+      if (a.cid) return;  // картинка в тексте письма
       const chip = el("div", "att"), info = el("div", "attInfo");
       const ext = (a.name.includes(".") ? a.name.split(".").pop() : "").slice(0, 4).toUpperCase();
       chip.appendChild(el("span", "attIcon " + attKind(a), ext || "FILE"));
@@ -2598,19 +2650,50 @@ function openCompose(d, opts = {}) {
     });
     attBox.append(attach, file);
   };
+  // загрузки по одной: сервер дописывает файл в список вложений черновика
+  c.queue = Promise.resolve();
+  const send1 = (f, inline, from = {}) => (c.queue = c.queue.catch(() => {}).then(async () => {
+    const res = await fetch("/api/drafts/" + c.draft.id + "/attachments", { method: "POST", body: f,
+      headers: { "X-Mailbot": "1", "X-Filename": encodeURIComponent(f.name || "image.png"), "X-Inline": inline ? "1" : "0",
+        "X-Source-Cid": from.orig || "", "X-Size": from.size || "", "Content-Type": f.type || "application/octet-stream" } });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    c.draft = data.draft;
+    return data.draft.attachments[data.draft.attachments.length - 1];
+  }));
   const upload = async (files) => {
     const pending = [...files];
     renderAtt(pending);
     for (const f of files) {
-      try {
-        const res = await fetch("/api/drafts/" + c.draft.id + "/attachments", { method: "POST", body: f,
-          headers: { "X-Mailbot": "1", "X-Filename": encodeURIComponent(f.name), "Content-Type": f.type || "application/octet-stream" } });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || res.statusText);
-        c.draft = data.draft;
-      } catch (e) { alert(f.name + ": " + e.message); }
+      try { await send1(f, false); } catch (e) { alert(f.name + ": " + e.message); }
       pending.shift(); renderAtt(pending);
     }
+  };
+  // картинка в текст письма, как в Outlook: сразу видна, загружается в фоне
+  const INLINE_RE = /^image\/(png|jpeg|gif|webp)$/;
+  const isInline = (f) => INLINE_RE.test(f.type);
+  const insertImages = (files, range) => {
+    const sel = getSelection();
+    if (range) { sel.removeAllRanges(); sel.addRange(range); }
+    if (!sel.rangeCount || !editor.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+      const r = document.createRange(); r.selectNodeContents(editor); r.collapse(false); sel.removeAllRanges(); sel.addRange(r);
+    }
+    files.forEach((f) => {
+      const img = document.createElement("img"), url = URL.createObjectURL(f);
+      img.src = url; img.className = "uploading"; img.alt = "";
+      const r = sel.getRangeAt(0); r.deleteContents(); r.insertNode(img);
+      r.setStartAfter(img); r.collapse(true); sel.removeAllRanges(); sel.addRange(r);
+      send1(f, true).then((a) => {
+        if (!img.isConnected) return;
+        img.replaceWith(inlineImg(c.draft.id, a.cid)); changed();
+      }).catch((e) => { img.remove(); alert((f.name || "Картинка") + ": " + e.message); })
+        .finally(() => URL.revokeObjectURL(url));
+    });
+  };
+  const takeFiles = (files, range) => {  // картинки — в текст, остальное — вложениями
+    const imgs = files.filter(isInline), rest = files.filter((f) => !isInline(f));
+    if (imgs.length) insertImages(imgs, range);
+    if (rest.length) upload(rest);
   };
   renderAtt();
 
@@ -2646,7 +2729,7 @@ function openCompose(d, opts = {}) {
   const fmt = el("div", "fmt"), editor = el("div", "cmpEditor");
   editor.contentEditable = "true"; editor.setAttribute("role", "textbox"); editor.setAttribute("aria-multiline", "true");
   editor.setAttribute("aria-label", "Текст письма"); editor.dataset.placeholder = "Текст письма";
-  editor.appendChild(safeFragment(d.body_html));
+  editor.appendChild(safeFragment(d.body_html, d.id));
   const tool = (content, title, run) => {
     const b = el("button"); b.type = "button"; b.title = title;
     if (ICON[content]) b.innerHTML = ICON[content]; else b.appendChild(content);
@@ -2674,18 +2757,116 @@ function openCompose(d, opts = {}) {
   fmt.appendChild(sigBtn);
   tool("eraser", "Убрать оформление", () => { document.execCommand("removeFormat"); document.execCommand("unlink"); });
   editor.oninput = changed;
-  editor.onpaste = (e) => {  // вставляем только текст: чужой HTML в письмо не попадает
+  editor.onpaste = (e) => {  // вставляем только текст и файлы: чужой HTML в письмо не попадает
     e.preventDefault();
+    const files = [...((e.clipboardData && e.clipboardData.files) || [])];
+    if (files.length) { takeFiles(files); return; }
     document.execCommand("insertText", false, (e.clipboardData || window.clipboardData).getData("text/plain"));
   };
   editor.ondrop = (e) => {
     e.preventDefault();
-    if (e.dataTransfer.files.length) { root.classList.remove("drop"); upload([...e.dataTransfer.files]); return; }
+    if (e.dataTransfer.files.length) {
+      root.classList.remove("drop");
+      const r = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
+      takeFiles([...e.dataTransfer.files], r && editor.contains(r.startContainer) ? r : null);
+      return;
+    }
     document.execCommand("insertText", false, e.dataTransfer.getData("text/plain"));
   };
   try { document.execCommand("defaultParagraphSeparator", false, "p"); } catch (e) { /* старые браузеры */ }
 
-  root.append(top, err, to.row, cc.row, bcc.row, subjRow, attBox, aiBar, fmt, editor);
+  // картинка в тексте письма: размер, как в Outlook, редактор и удаление
+  const SIZE_PX = { small: 448, medium: 640, large: 1024 };
+  const attOf = (cid) => c.draft.attachments.find((a) => a.cid === cid) || {};
+  const baseOf = (cid) => attOf(cid).orig || cid;
+  const blobOf = async (cid) => {
+    const r = await fetch("/api/drafts/" + c.draft.id + "/inline/" + cid);
+    if (!r.ok) throw new Error("картинка не загрузилась");
+    return r.blob();
+  };
+  const used = (cid) => !!editor.querySelector('img[data-cid="' + cid + '"]') ||
+    c.draft.attachments.some((a) => a.orig === cid && editor.querySelector('img[data-cid="' + a.cid + '"]'));
+  const dropFile = (cid) => { c.queue = c.queue.catch(() => {}).then(async () => {  // старую версию картинки — с диска
+    const i = c.draft.attachments.findIndex((a) => a.cid === cid);
+    if (i >= 0 && !used(cid)) c.draft = (await api("DELETE", "/api/drafts/" + c.draft.id + "/attachments/" + i)).draft;
+  }); };
+  const swap = (img, cid) => {
+    const old = img.dataset.cid, base = baseOf(old), n = inlineImg(c.draft.id, cid);
+    img.replaceWith(n); changed();
+    if (old !== cid) { dropFile(old); if (base !== old) dropFile(base); }
+    return n;
+  };
+  const scaled = async (blob, side) => {  // уменьшить до длинной стороны side; null — и так не больше
+    const bmp = await createImageBitmap(blob);
+    const k = side / Math.max(bmp.width, bmp.height);
+    if (k >= 1) return null;
+    const cv = document.createElement("canvas");
+    cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+    const g = cv.getContext("2d"); g.imageSmoothingQuality = "high"; g.drawImage(bmp, 0, 0, cv.width, cv.height);
+    return canvasBlob(cv, blob.type);
+  };
+  const busy = (img, on) => { img.classList.toggle("uploading", on); imgBar.querySelectorAll("button").forEach((b) => { b.disabled = on; }); };
+  const setSize = async (img, size) => {
+    const cur = img.dataset.cid, base = baseOf(cur);
+    if ((attOf(cur).scale || "orig") === size) return img;
+    busy(img, true);
+    try {
+      if (size === "orig") return swap(img, base);
+      const small = await scaled(await blobOf(base), SIZE_PX[size]);
+      if (!small) { toast("Картинка и так не больше этого размера"); return base === cur ? img : swap(img, base); }
+      const a = await send1(new File([small], attOf(base).name || "image", { type: small.type }), true, { orig: base, size });
+      return swap(img, a.cid);
+    } catch (e) { alert("Картинка: " + e.message); return img; }
+    finally { busy(img, false); }
+  };
+  const editImg = async (img) => {
+    const cur = img.dataset.cid, base = baseOf(cur), size = attOf(cur).scale || "orig";
+    hideBar();
+    let out;
+    try { out = await imageEditor(await blobOf(base)); } catch (e) { alert("Картинка: " + e.message); return; }
+    if (!out || !img.isConnected) return;
+    busy(img, true);
+    try {
+      const a = await send1(new File([out], attOf(base).name || "image", { type: out.type }), true);
+      const n = swap(img, a.cid);
+      if (size !== "orig") await setSize(n, size);
+    } catch (e) { alert("Картинка: " + e.message); }
+    finally { busy(img, false); }
+  };
+  const imgBar = el("div", "imgBar"); imgBar.hidden = true;
+  let barImg = null;
+  const hideBar = () => { imgBar.hidden = true; if (barImg) barImg.classList.remove("sel"); barImg = null; };
+  const showBar = (img) => {
+    if (barImg && barImg !== img) barImg.classList.remove("sel");
+    barImg = img; img.classList.add("sel"); imgBar.textContent = "";
+    const seg = el("div", "seg"), now = attOf(img.dataset.cid).scale || "orig";
+    [["small", "Мелкий", "До 448 пикселей по длинной стороне"], ["medium", "Средний", "До 640 пикселей"],
+     ["large", "Крупный", "До 1024 пикселей"], ["orig", "Исходный", "Как вставили, без уменьшения"]].forEach(([k, t, tip]) => {
+      const b = el("button", k === now ? "on" : "", t); b.type = "button"; b.title = tip;
+      b.onmousedown = (e) => e.preventDefault();
+      b.onclick = async () => { const n = await setSize(img, k); if (n.isConnected) showBar(n); };
+      seg.appendChild(b);
+    });
+    const dim = el("span", "dim");
+    const dimText = () => { dim.textContent = img.naturalWidth ? img.naturalWidth + "×" + img.naturalHeight : ""; };
+    dimText(); if (!img.complete) img.addEventListener("load", dimText, { once: true });
+    const ed = el("button", "btn small ghost", "Редактировать"); ed.type = "button";
+    ed.title = "Нарисовать поверх, обрезать, повернуть"; ed.onclick = () => editImg(img);
+    const del = el("button", "iconBtn"); del.type = "button"; del.innerHTML = ICON.trash; del.title = "Убрать картинку из письма";
+    del.onclick = () => { const cid = img.dataset.cid, base = baseOf(cid); hideBar(); img.remove(); changed(); dropFile(cid); if (base !== cid) dropFile(base); };
+    imgBar.append(seg, dim, ed, del);
+    imgBar.hidden = false;
+    const r = img.getBoundingClientRect(), rr = root.getBoundingClientRect();
+    const top = r.top - rr.top - imgBar.offsetHeight - 8;
+    imgBar.style.top = Math.max(top < 0 ? r.bottom - rr.top + 8 : top, 0) + "px";
+    imgBar.style.left = Math.max(8, Math.min(r.left - rr.left, rr.width - imgBar.offsetWidth - 8)) + "px";
+  };
+  editor.addEventListener("click", (e) => { if (e.target.tagName === "IMG" && e.target.dataset.cid) showBar(e.target); else hideBar(); });
+  editor.addEventListener("dblclick", (e) => { if (e.target.tagName === "IMG" && e.target.dataset.cid) editImg(e.target); });
+  editor.addEventListener("input", () => { if (barImg && !barImg.isConnected) hideBar(); });
+  root.addEventListener("click", (e) => { if (!editor.contains(e.target) && !imgBar.contains(e.target)) hideBar(); });
+
+  root.append(top, err, to.row, cc.row, bcc.row, subjRow, attBox, aiBar, fmt, editor, imgBar);
   if (d.ref_email_id) {
     const q = el("details", "cmpQuote");
     q.appendChild(el("summary", "", d.kind === "forward" ? "Пересылаемое письмо: Exchange добавит его под вашим текстом"
@@ -2699,8 +2880,21 @@ function openCompose(d, opts = {}) {
   root.ondragleave = (e) => { if (!root.contains(e.relatedTarget)) root.classList.remove("drop"); };
   root.ondrop = (e) => { if (e.dataTransfer.files.length) { e.preventDefault(); root.classList.remove("drop"); upload([...e.dataTransfer.files]); } };
   root.onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send.click(); } };
+  root.onpaste = (e) => {
+    const files = [...((e.clipboardData && e.clipboardData.files) || [])];
+    if (files.length && !editor.contains(e.target)) { e.preventDefault(); upload(files); }
+  };
+  c.takeDrop = (files) => upload(files);  // файл бросили мимо окна письма
 
-  c.collect = () => ({ to: to.get(), cc: cc.get(), bcc: bcc.get(), subject: subj.value, body_html: editor.innerHTML });
+  const bodyHtml = () => {
+    const copy = editor.cloneNode(true);
+    copy.querySelectorAll("img").forEach((img) => {
+      if (!img.dataset.cid) { img.remove(); return; }  // ещё загружается
+      img.setAttribute("src", "cid:" + img.dataset.cid); img.removeAttribute("data-cid"); img.removeAttribute("alt");
+    });
+    return copy.innerHTML;
+  };
+  c.collect = () => ({ to: to.get(), cc: cc.get(), bcc: bcc.get(), subject: subj.value, body_html: bodyHtml() });
   c.isEmpty = () => { const x = c.collect(); return !x.to.length && !x.cc.length && !x.bcc.length && !x.subject.trim() && !htmlText(x.body_html.replace(/<div data-gm-sig="1">[\s\S]*$/, "")) && !c.draft.attachments.some((a) => !("ref" in a)) && c.draft.kind === "new"; };
 
   send.onclick = async () => {
@@ -2709,7 +2903,17 @@ function openCompose(d, opts = {}) {
     const bad = [...data.to, ...data.cc, ...data.bcc].filter((p) => !validPerson(p));
     if (bad.length) { alert("Это не адреса почты: " + bad.join(", ")); return; }
     if (!data.to.length && !data.cc.length && !data.bcc.length) { alert("Укажите, кому отправить письмо"); to.focus(); return; }
-    if (!data.subject.trim() && !confirm("Отправить письмо без темы?")) return;
+    if (editor.querySelector("img.uploading")) { alert("Подождите: картинки ещё загружаются"); return; }
+    const who = (xs) => xs.map(personLabel).join(", ");
+    const files = c.draft.attachments.filter((a) => !a.cid && !("ref" in a)).length;
+    const lines = ["Кому: " + (who(data.to) || "—")];
+    if (data.cc.length) lines.push("Копия: " + who(data.cc));
+    if (data.bcc.length) lines.push("СК: " + who(data.bcc));
+    lines.push(data.subject.trim() ? "Тема: " + data.subject.trim() : "Без темы");
+    if (files) lines.push("Вложений: " + files);
+    send.blur();
+    if (!await choose("Отправить письмо?", lines.join("\n"), [{ label: "Отправить", cls: "primary", v: true }], true)) return;
+    if (compose !== c) return;
     clearTimeout(c.timer); c.dirty = false;
     send.disabled = true; c.state("Отправляется…"); err.hidden = true;
     try {
@@ -2735,6 +2939,147 @@ function openCompose(d, opts = {}) {
   if (opts.ai || d.kind === "reply" || d.kind === "reply_all") editor.focus();
   else if (!d.to.length) to.focus();
 }
+function canvasBlob(cv, srcType) {
+  // скриншоты и схемы остаются PNG — чёткие; фото — JPEG, в разы легче
+  const png = /png|gif/.test(srcType || "");
+  return new Promise((ok, bad) => cv.toBlob((b) => (b ? ok(b) : bad(new Error("не удалось сохранить картинку"))),
+    png ? "image/png" : "image/jpeg", png ? undefined : 0.9));
+}
+function imageEditor(blob) {
+  // простой редактор: карандаш, рамка, стрелка, текст, обрезка, поворот, отмена шага
+  return new Promise(async (resolve) => {
+    const bmp = await createImageBitmap(blob);
+    const MAX = 4096, k0 = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
+    const cv = document.createElement("canvas"), over = document.createElement("canvas");
+    cv.width = Math.round(bmp.width * k0); cv.height = Math.round(bmp.height * k0);
+    const g = cv.getContext("2d"); g.drawImage(bmp, 0, 0, cv.width, cv.height);
+    over.className = "over";
+    const back = el("div", "dlgBack"), box = el("div", "imgEd"), bar = el("div", "bar"), stage = el("div", "stage"), wrap = el("div");
+    box.setAttribute("role", "dialog"); box.setAttribute("aria-modal", "true"); box.setAttribute("aria-label", "Редактор картинки");
+    wrap.append(cv, over); stage.appendChild(wrap);
+    const st = { tool: "pen", color: "#e53935", width: 4, crop: null }, undo = [];
+    const COLORS = ["#e53935", "#fb8c00", "#fdd835", "#43a047", "#1e88e5", "#000000", "#ffffff"];
+    const btn = (text, title, fn, cls) => { const b = el("button", cls || "", text); b.type = "button"; b.title = title || ""; b.onclick = fn; return b; };
+    const toolSeg = el("div", "seg");
+    const TOOLS = [["pen", "Карандаш"], ["rect", "Рамка"], ["arrow", "Стрелка"], ["text", "Текст"], ["crop", "Обрезать"]];
+    TOOLS.forEach(([k, t]) => toolSeg.appendChild(btn(t, "", () => setTool(k))));
+    const colors = el("div"); colors.style.cssText = "display:inline-flex;gap:6px;align-items:center";
+    COLORS.forEach((col) => { const s = btn("", col, () => { st.color = col; paintUi(); }, "sw"); s.style.background = col; s.dataset.c = col; colors.appendChild(s); });
+    const widthSeg = el("div", "seg");
+    [[2, "Тонко"], [4, "Средне"], [8, "Толсто"]].forEach(([w, t]) => { const b = btn(t, "Толщина линии", () => { st.width = w; paintUi(); }); b.dataset.w = w; widthSeg.appendChild(b); });
+    const rot = btn("", "Повернуть на 90°", () => { snap(); const t = copy(); cv.width = t.height; cv.height = t.width;
+      g.save(); g.translate(cv.width, 0); g.rotate(Math.PI / 2); g.drawImage(t, 0, 0); g.restore(); resetOver(); }, "iconBtn");
+    rot.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>';
+    const und = btn("", "Отменить шаг (Ctrl+Z)", () => doUndo(), "iconBtn");
+    und.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>';
+    const applyCrop = btn("Применить обрезку", "Enter", () => doCrop(), "btn small primary");
+    const hint = el("span", "hint", "");
+    const cancel = btn("Отмена", "Esc", () => done(false), "btn small ghost"), ok = btn("Готово", "", () => done(true), "btn small primary");
+    bar.append(toolSeg, colors, widthSeg, rot, und, applyCrop, hint, el("span", "grow"), cancel, ok);
+    box.append(bar, stage); back.appendChild(box);
+    const copy = () => { const t = document.createElement("canvas"); t.width = cv.width; t.height = cv.height; t.getContext("2d").drawImage(cv, 0, 0); return t; };
+    const snap = () => { undo.push(copy()); if (undo.length > 30) undo.shift(); paintUi(); };
+    const doUndo = () => { const t = undo.pop(); if (!t) return; cv.width = t.width; cv.height = t.height; g.drawImage(t, 0, 0); st.crop = null; resetOver(); paintUi(); };
+    const resetOver = () => { over.width = cv.width; over.height = cv.height; drawOver(); };
+    const ratio = () => cv.width / cv.getBoundingClientRect().width;  // пикселей картинки на пиксель экрана
+    const pt = (e) => { const r = over.getBoundingClientRect(), k = cv.width / r.width; return { x: (e.clientX - r.left) * k, y: (e.clientY - r.top) * k }; };
+    const setTool = (t) => { st.tool = t; st.crop = null; drawOver(); paintUi(); };
+    const paintUi = () => {
+      toolSeg.querySelectorAll("button").forEach((b, i) => b.classList.toggle("on", TOOLS[i][0] === st.tool));
+      colors.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.c === st.color));
+      widthSeg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", Number(b.dataset.w) === st.width));
+      applyCrop.hidden = !(st.tool === "crop" && st.crop && st.crop.w > 4 && st.crop.h > 4);
+      und.disabled = !undo.length;
+      hint.textContent = st.tool === "crop" && applyCrop.hidden ? "Выделите область, которую оставить" : st.tool === "text" ? "Щёлкните, где написать" : "";
+      over.style.cursor = st.tool === "text" ? "text" : "crosshair";
+    };
+    const line = (ctx) => { ctx.strokeStyle = st.color; ctx.fillStyle = st.color; ctx.lineWidth = st.width * ratio(); ctx.lineCap = "round"; ctx.lineJoin = "round"; };
+    const arrow = (ctx, a, b) => {
+      line(ctx); const ang = Math.atan2(b.y - a.y, b.x - a.x), head = Math.max(12, st.width * 4) * ratio();
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x - Math.cos(ang) * head * .6, b.y - Math.sin(ang) * head * .6); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(b.x, b.y);
+      ctx.lineTo(b.x - head * Math.cos(ang - .45), b.y - head * Math.sin(ang - .45));
+      ctx.lineTo(b.x - head * Math.cos(ang + .45), b.y - head * Math.sin(ang + .45)); ctx.closePath(); ctx.fill();
+    };
+    const norm = (a, b) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) });
+    const o = over.getContext("2d");
+    const drawOver = (a, b) => {
+      o.clearRect(0, 0, over.width, over.height);
+      if (st.tool === "crop" && st.crop) {
+        const r = st.crop; o.fillStyle = "rgba(0,0,0,.5)"; o.fillRect(0, 0, over.width, over.height); o.clearRect(r.x, r.y, r.w, r.h);
+        o.strokeStyle = "#fff"; o.lineWidth = ratio(); o.setLineDash([6 * ratio(), 4 * ratio()]); o.strokeRect(r.x, r.y, r.w, r.h); o.setLineDash([]);
+      } else if (a && b && st.tool === "rect") { line(o); const r = norm(a, b); o.strokeRect(r.x, r.y, r.w, r.h); }
+      else if (a && b && st.tool === "arrow") arrow(o, a, b);
+    };
+    const doCrop = () => {
+      const r = st.crop; if (!r || r.w < 4 || r.h < 4) return;
+      snap(); const t = copy(); cv.width = Math.round(r.w); cv.height = Math.round(r.h);
+      g.drawImage(t, Math.round(r.x), Math.round(r.y), cv.width, cv.height, 0, 0, cv.width, cv.height);
+      st.crop = null; resetOver(); paintUi();
+    };
+    let start = null, last = null;
+    over.onpointerdown = (e) => {
+      if (e.button !== 0) return;
+      const p = pt(e);
+      if (st.tool === "text") { placeText(e, p); return; }
+      over.setPointerCapture(e.pointerId); start = last = p;
+      if (st.tool === "pen") { snap(); line(g); g.beginPath(); g.moveTo(p.x, p.y); g.lineTo(p.x + .01, p.y); g.stroke(); }
+    };
+    over.onpointermove = (e) => {
+      if (!start) return; const p = pt(e);
+      if (st.tool === "pen") { g.beginPath(); g.moveTo(last.x, last.y); g.lineTo(p.x, p.y); g.stroke(); }
+      else if (st.tool === "crop") { st.crop = norm(start, { x: Math.max(0, Math.min(cv.width, p.x)), y: Math.max(0, Math.min(cv.height, p.y)) }); drawOver(); }
+      else drawOver(start, p);
+      last = p;
+    };
+    over.onpointerup = (e) => {
+      if (!start) return; const p = pt(e), a = start; start = null;
+      if (st.tool === "rect" || st.tool === "arrow") {
+        if (Math.hypot(p.x - a.x, p.y - a.y) > 3) { snap(); if (st.tool === "rect") { line(g); const r = norm(a, p); g.strokeRect(r.x, r.y, r.w, r.h); } else arrow(g, a, p); }
+        drawOver();
+      }
+      paintUi();
+    };
+    const placeText = (e, p) => {
+      const input = el("input", "txt"), r = wrap.getBoundingClientRect();
+      input.style.left = (e.clientX - r.left) + "px"; input.style.top = (e.clientY - r.top - 14) + "px"; input.style.color = st.color === "#ffffff" ? "#000" : st.color;
+      wrap.appendChild(input); setTimeout(() => input.focus());
+      let fin = false;
+      const commit = (keep) => {
+        if (fin) return; fin = true;
+        const t = input.value.trim(); input.remove();
+        if (!keep || !t) return;
+        snap(); const size = (12 + st.width * 3) * ratio();
+        g.font = "600 " + size + "px " + getComputedStyle(document.body).fontFamily; g.textBaseline = "middle";
+        g.lineWidth = size / 6; g.strokeStyle = st.color === "#ffffff" || st.color === "#fdd835" ? "rgba(0,0,0,.6)" : "#fff"; g.lineJoin = "round";
+        g.strokeText(t, p.x, p.y); g.fillStyle = st.color; g.fillText(t, p.x, p.y);
+      };
+      input.onkeydown = (ev) => { ev.stopPropagation(); if (ev.key === "Enter") commit(true); if (ev.key === "Escape") commit(false); };
+      input.onblur = () => commit(true);
+    };
+    const key = (ev) => {
+      if (ev.target.classList && ev.target.classList.contains("txt")) return;  // печатают подпись на картинке
+      if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); if (st.crop) { st.crop = null; drawOver(); paintUi(); } else done(false); }
+      else if (ev.key === "Enter" && st.crop) { ev.preventDefault(); doCrop(); }
+      else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "z") { ev.preventDefault(); doUndo(); }
+    };
+    const done = async (save) => {
+      if (!save && undo.length && !confirm("Выйти без сохранения правок?")) return;
+      document.removeEventListener("keydown", key, true); back.remove();
+      if (!save || (!undo.length && k0 === 1)) { resolve(null); return; }
+      try { resolve(await canvasBlob(cv, blob.type)); } catch (e) { alert(e.message); resolve(null); }
+    };
+    document.body.appendChild(back); document.addEventListener("keydown", key, true);
+    resetOver(); paintUi(); ok.focus();
+  });
+}
+// файл, брошенный мимо окна письма, браузер открыл бы вместо почты: прикладываем его к письму или игнорируем
+document.addEventListener("dragover", (e) => { if ([...e.dataTransfer.types].includes("Files")) e.preventDefault(); });
+document.addEventListener("drop", (e) => {
+  if (e.defaultPrevented || !e.dataTransfer.files.length) return;
+  e.preventDefault();
+  if (compose && compose.takeDrop) compose.takeDrop([...e.dataTransfer.files]);
+});
 function showSent(d) {
   selected = null; selectedDraft = d.id; listSig = ""; refresh();
   $("layout").classList.add("reading");
@@ -3127,7 +3472,7 @@ function ruleText(r) {
   if (r.end === "count") t += ", всего " + r.count + " раз";
   return t;
 }
-function choose(title, text, buttons) {
+function choose(title, text, buttons, focusCancel) {
   // свой диалог вместо confirm: у вопроса про серию три ответа
   return new Promise((resolve) => {
     const back = el("div", "dlgBack"), box = el("div", "dlg"), a = el("div", "actions");
@@ -3141,7 +3486,7 @@ function choose(title, text, buttons) {
     box.appendChild(a); back.appendChild(box);
     back.onclick = (ev) => { if (ev.target === back) done(null); };
     document.body.appendChild(back); document.addEventListener("keydown", key, true);
-    a.querySelector("button").focus();
+    (focusCancel ? c : a.querySelector("button")).focus();
   });
 }
 async function askScope(e, verb, notify) {
@@ -3302,16 +3647,23 @@ function eventDetails(body, x) {
     t.id = "evComment"; l.htmlFor = t.id; t.rows = 3;
     body.append(l, t);
     const a = el("div", "actions");
+    const answer = async (act, notify) => {
+      if (act === "decline" && !confirm("Отклонить «" + x.subject + "»? Организатор получит отказ, встреча уйдёт из календаря.")) return;
+      a.querySelectorAll("button").forEach((y) => { y.disabled = true; });
+      try { await api("POST", "/api/calendar/respond", notify ? { id: x.id, action: act, reply: t.value } : { id: x.id, action: act, notify: false }); closeEvPanel(); }
+      catch (err) { alert(err.message); a.querySelectorAll("button").forEach((y) => { y.disabled = false; }); }
+      loadCal(); remFetch();
+    };
     INVITE_ACTIONS.forEach(([act, text]) => {
       const b = el("button", "btn" + (RESP_OF[act] === x.my_response ? " primary" : ""), text);
-      b.onclick = async () => {
-        if (act === "decline" && !confirm("Отклонить «" + x.subject + "»? Организатор получит отказ, встреча уйдёт из календаря.")) return;
-        a.querySelectorAll("button").forEach((y) => { y.disabled = true; });
-        try { await api("POST", "/api/calendar/respond", { id: x.id, action: act, reply: t.value }); closeEvPanel(); }
-        catch (err) { alert(err.message); a.querySelectorAll("button").forEach((y) => { y.disabled = false; }); }
-        loadCal(); remFetch();
-      };
+      b.onclick = () => answer(act, true);
       a.appendChild(b);
+      if (act === "accept" && x.my_response !== "Accept") {
+        const s = el("button", "btn", "Принять без ответа");
+        s.title = SILENT_TITLE + ". Комментарий не отправится";
+        s.onclick = () => answer("accept", false);
+        a.appendChild(s);
+      }
     });
     body.appendChild(a);
   }

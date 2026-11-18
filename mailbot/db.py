@@ -484,6 +484,8 @@ class Database:
                 "SELECT id, subject, sender, sender_name, received_at, has_attachments, status, category, confidence, "
                 "folder, is_read, conversation_id, flag, recipients, "
                 "summary, jira_key, recommend_action, error, attempts, invite, invite_decision, invite_state, "
+                "CASE WHEN json_valid(invite_response) AND json_extract(invite_response, '$.notify') = 0 "
+                "THEN json_extract(invite_response, '$.action') END AS invite_silent, "
                 "substr(replace(replace(body, char(10), ' '), char(13), ' '), 1, 160) AS preview, "
                 "(SELECT status FROM runs r WHERE r.email_id = emails.id ORDER BY r.id DESC LIMIT 1) AS run_status "
                 "FROM emails" + clause + " ORDER BY received_at {0}, id {0} LIMIT ? OFFSET ?".format(
@@ -492,11 +494,12 @@ class Database:
         emails = []
         for r in rows:
             e = _load(dict(r))
-            invite, decision = e.pop("invite"), e.pop("invite_decision")
+            invite, decision, silent = e.pop("invite"), e.pop("invite_decision"), e.pop("invite_silent")
             # в списке хватает вида приглашения и того, что с ним сейчас
             e["invite"] = {"kind": invite["kind"], "start": invite.get("start"),
                            "conflicts": len(invite.get("conflicts") or []),
-                           "suggested": (decision or {}).get("action")} if invite else None
+                           "suggested": (decision or {}).get("action"),
+                           "silent": silent} if invite else None  # ответили без письма организатору
             emails.append(e)
         return {"emails": emails, "total": total}
 

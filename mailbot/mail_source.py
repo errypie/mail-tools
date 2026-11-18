@@ -365,11 +365,12 @@ class ExchangeSource(ExchangeOffice):
         return fields
 
     def respond(self, item_ids: Sequence[Optional[str]], action: str, reply: str = "",
-                proposed: Optional[dict] = None) -> dict:
+                proposed: Optional[dict] = None, notify: bool = True) -> dict:
         """Ответ организатору. Сначала по самому приглашению, потом по событию в календаре:
-        после ответа в Outlook Exchange удаляет приглашение из входящих."""
+        после ответа в Outlook Exchange удаляет приглашение из входящих.
+        notify=False — как «Не отправлять ответ» в Outlook: встреча в календаре меняется, организатору ничего не уходит."""
         from exchangelib import Body, EWSDateTime
-        from exchangelib.items import AcceptItem, DeclineItem, TentativelyAcceptItem
+        from exchangelib.items import SAVE_ONLY, AcceptItem, DeclineItem, TentativelyAcceptItem
         from exchangelib.properties import ReferenceItemId
 
         cls = {"accept": AcceptItem, "tentative": TentativelyAcceptItem, "decline": DeclineItem}[action]
@@ -377,8 +378,12 @@ class ExchangeSource(ExchangeOffice):
             target = self._fresh(item_id)
             if target is None:
                 continue
-            kwargs = {"body": Body(reply)} if reply else {}
             ref = ReferenceItemId(id=target.id, changekey=target.changekey)
+            if not notify:
+                saved = cls(account=self.account, reference_item_id=ref).send(message_disposition=SAVE_ONLY)
+                self._drop_reply_drafts(saved)
+                return {"proposed": False}
+            kwargs = {"body": Body(reply)} if reply else {}
             if proposed:
                 try:
                     cls(account=self.account, reference_item_id=ref,
@@ -390,6 +395,24 @@ class ExchangeSource(ExchangeOffice):
             cls(account=self.account, reference_item_id=ref, **kwargs).send()
             return {"proposed": False}
         raise MailError("Приглашение не найдено в Exchange: возможно, его удалили или на него уже ответили в Outlook")
+
+    def _drop_reply_drafts(self, saved) -> None:
+        """Ответ без отправки Exchange сохраняет письмом в «Черновики». Outlook такой черновик не оставляет — удаляем.
+        Удаляем только сами ответы на приглашение (IPM.Schedule.Meeting.Resp…), встречу в календаре не трогаем."""
+        ids = []
+        for r in saved if isinstance(saved, list) else [saved]:
+            if isinstance(r, tuple) and r and r[0]:
+                ids.append((r[0], r[1] if len(r) > 1 else None))
+            elif getattr(r, "id", None):
+                ids.append((r.id, getattr(r, "changekey", None)))
+        if not ids:
+            return
+        try:
+            for item in self.account.fetch(ids=ids, only_fields=["item_class"]):
+                if not isinstance(item, Exception) and (item.item_class or "").startswith("IPM.Schedule.Meeting.Resp"):
+                    item.delete()
+        except Exception:  # noqa: BLE001 — встреча уже принята; в худшем случае в черновиках останется ответ
+            pass
 
     def create_event(self, spec: dict) -> str:
         from exchangelib.items import SEND_TO_ALL_AND_SAVE_COPY, SEND_TO_NONE, CalendarItem
@@ -503,7 +526,8 @@ class ExchangeSource(ExchangeOffice):
 
         boxes = lambda xs: [_mailbox(Mailbox, x) for x in xs] or None  # noqa: E731
         body = HTMLBody(body_html or "<p></p>")
-        attachments = [FileAttachment(name=name, content=data) for name, data in files]
+        attachments = [FileAttachment(name=name, content=data, is_inline=bool(cid), content_id=cid or None)
+                       for name, data, *rest in files for cid in [rest[0] if rest else None]]
         if kind == "new":
             msg = Message(account=self.account, folder=self.account.sent, subject=subject, body=body,
                           to_recipients=boxes(to), cc_recipients=boxes(cc), bcc_recipients=boxes(bcc))
@@ -989,7 +1013,7 @@ class FakeSource(FakeOffice):
                 for e, n, rooms in self.ROOM_LISTS]
 
     def respond(self, item_ids: Sequence[Optional[str]], action: str, reply: str = "",
-                proposed: Optional[dict] = None) -> dict:
+                proposed: Optional[dict] = None, notify: bool = True) -> dict:
         ev = next((e for e in self.calendar for i in item_ids if i and e["id"] == str(i).partition("::")[0]), None)
         if ev is None:
             raise MailError("Приглашение не найдено в тестовом календаре")
@@ -998,8 +1022,9 @@ class FakeSource(FakeOffice):
         else:
             ev.update(my_response="Accept" if action == "accept" else "Tentative",
                       free_busy="Busy" if action == "accept" else "Tentative")
-        self.replies.append({"to": ev["organizer"], "action": action, "reply": reply, "proposed": proposed})
-        return {"proposed": bool(proposed)}
+        if notify:  # без ответа организатору письмо не уходит, меняется только календарь
+            self.replies.append({"to": ev["organizer"], "action": action, "reply": reply, "proposed": proposed})
+        return {"proposed": bool(proposed) and notify}
 
     def test(self) -> str:
         return "Тестовый источник работает"
@@ -1126,7 +1151,7 @@ class FakeSource(FakeOffice):
             raise MailError("Исходное письмо не найдено")
         self.outbox.append({"kind": kind, "ref": ref_item_id, "to": list(to), "cc": list(cc), "bcc": list(bcc),
                             "subject": subject, "body_html": body_html,
-                            "files": [(name, len(data)) for name, data in files]})
+                            "files": [(f[0], len(f[1])) for f in files]})
         ref = self.box.get(ref_item_id or "") or {}
         item_id = "sent-{}".format(len(self.outbox))
         self.box[item_id] = {

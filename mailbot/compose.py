@@ -57,6 +57,8 @@ def clean_people(values) -> List[str]:
     return out
 
 
+INLINE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
+IMAGE_SIZES = ("small", "medium", "large")  # как «Размер картинки» в Outlook
 PREFIXES = {"RE: ": ("re:", "отв:", "ответ:"), "FW: ": ("fw:", "fwd:", "пересл:")}
 
 

@@ -153,9 +153,10 @@ def render(raw: str, inline: Dict[str, str], allow_remote: bool) -> Tuple[str, i
     return doc, w.blocked
 
 
-def clean_fragment(raw: str) -> str:
-    """Текст из редактора перед отправкой: без скриптов, обработчиков и опасных ссылок."""
-    w = _Rewriter({}, True)
+def clean_fragment(raw: str, cids=()) -> str:
+    """Текст из редактора перед отправкой: без скриптов, обработчиков и опасных ссылок.
+    cids — картинки, вставленные в текст: ссылки cid: на них остаются, на остальные — убираются."""
+    w = _Rewriter({c.lower(): "cid:" + c for c in cids}, True)
     w.feed(raw or "")
     w.close()
     return "".join(w.out)

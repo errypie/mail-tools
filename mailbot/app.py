@@ -35,7 +35,7 @@ SESSION_TTL = 12 * 3600
 MAX_FAILURES, LOCK_SECONDS = 5, 60
 MAX_BODY = 2 * 1024 * 1024
 CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; "
-       "img-src 'self' data: https: http:; font-src data:; frame-src 'self'; base-uri 'none'; form-action 'none'; "
+       "img-src 'self' data: blob: https: http:; font-src data:; frame-src 'self'; base-uri 'none'; form-action 'none'; "
        "frame-ancestors 'none'")
 # что можно открыть во вкладке браузера, остальное только скачивается: HTML или SVG из вложения выполнили бы скрипты
 PREVIEW_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "application/pdf", "text/plain"}
@@ -666,7 +666,8 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(400, "Номер окна — целое число")
         try:
             response = self.ctx.worker.respond_invite(email["id"], str(body.get("action") or ""),
-                                                      str(body.get("reply") or "")[:MAX_REPLY_CHARS], propose)
+                                                      str(body.get("reply") or "")[:MAX_REPLY_CHARS], propose,
+                                                      notify=body.get("notify", True) is not False)
         except ValueError as e:
             raise HttpError(400, str(e))
         except (RuntimeError, MailError) as e:
@@ -725,7 +726,10 @@ class Handler(BaseHTTPRequestHandler):
         data = self.rfile.read(length) if length else b""
         name = unquote(self.headers.get("X-Filename") or "файл")
         try:
-            draft = self.ctx.worker.add_upload(did, name, self.headers.get("Content-Type") or "", data)
+            draft = self.ctx.worker.add_upload(did, name, self.headers.get("Content-Type") or "", data,
+                                               inline=self.headers.get("X-Inline") == "1",
+                                               orig=self.headers.get("X-Source-Cid") or "",
+                                               size=self.headers.get("X-Size") or "")
         except ValueError as e:
             raise HttpError(413, str(e))
         self._json(200, {"draft": draft})
@@ -736,6 +740,15 @@ class Handler(BaseHTTPRequestHandler):
             meta, data = self.ctx.worker.upload_data(self._draft_id(did), int(idx))
         except (ValueError, OSError) as e:
             raise HttpError(404, str(e))
+        self._file(meta, data)
+
+    @route("GET", "/api/drafts/{did}/inline/{cid}")
+    def draft_inline(self, did, cid):
+        try:
+            meta, data = self.ctx.worker.inline_data(self._draft_id(did), cid)
+        except (ValueError, OSError) as e:
+            raise HttpError(404, str(e))
+        self.query["inline"] = "1"  # показываем в редакторе, а не скачиваем
         self._file(meta, data)
 
     @route("DELETE", "/api/drafts/{did}/attachments/{idx}")
@@ -887,7 +900,10 @@ class Handler(BaseHTTPRequestHandler):
         if action not in ACTIONS or not body.get("id"):
             raise HttpError(400, "Нужны id события и ответ: accept, tentative или decline")
         try:
-            self.ctx.worker.calendar().respond([str(body["id"])], action, str(body.get("reply") or "")[:MAX_REPLY_CHARS])
+            notify = body.get("notify", True) is not False  # False — как «Не отправлять ответ» в Outlook
+            self.ctx.worker.calendar().respond([str(body["id"])], action,
+                                               str(body.get("reply") or "")[:MAX_REPLY_CHARS] if notify else "",
+                                               notify=notify)
         except MailError as e:
             raise HttpError(400, str(e))
         except Exception as e:  # noqa: BLE001

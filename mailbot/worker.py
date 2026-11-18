@@ -269,7 +269,9 @@ class Worker:
             self.db.set_invite(email["id"], invite)
 
     def respond_invite(self, eid: int, action: str, reply: str = "", propose: Optional[int] = None,
-                       by: str = "user") -> dict:
+                       by: str = "user", notify: bool = True) -> dict:
+        """Ответ на приглашение. notify=False — без ответа организатору (как «Не отправлять ответ» в Outlook):
+        встреча встаёт в календарь с вашим ответом, но ни текст, ни новое время никуда не уходят."""
         email = self.db.get_email(eid)
         invite = (email or {}).get("invite")
         if not invite or invite.get("kind") != "request":
@@ -277,21 +279,23 @@ class Worker:
         if action not in ACTIONS:
             raise ValueError("Неизвестный ответ: {}".format(action))
         slots = invite.get("free_slots") or []
-        proposed = slots[propose - 1] if action != "accept" and propose and 1 <= propose <= len(slots) else None
+        proposed = slots[propose - 1] if action != "accept" and notify and propose and 1 <= propose <= len(slots) else None
         if proposed and not invite.get("allow_new_time", True):
             proposed = None  # организатор запретил предлагать другое время
-        text = substitute(reply or "", variables(email))[:MAX_REPLY_CHARS].strip()
-        response = {"action": action, "reply": text, "proposed": proposed, "by": by, "at": now_iso()}
+        text = substitute(reply or "", variables(email))[:MAX_REPLY_CHARS].strip() if notify else ""
+        response = {"action": action, "reply": text, "proposed": proposed, "by": by, "at": now_iso(), "notify": notify}
         if not self.db.claim_invite(eid, response):
             raise ValueError("Ответ на это приглашение уже отправляется")
         try:
-            result = self.calendar().respond([invite.get("item_id"), invite.get("calendar_id")], action, text, proposed)
+            result = self.calendar().respond([invite.get("item_id"), invite.get("calendar_id")], action, text, proposed,
+                                             notify=notify)
         except Exception as e:  # noqa: BLE001 — ошибку показываем у письма, кнопку можно нажать снова
             response["error"] = "{}: {}".format(type(e).__name__, e)[:1000]
             self.db.finish_invite(eid, response, False, response["error"])
             raise RuntimeError(response["error"])
         response["proposed_sent"] = bool(result.get("proposed"))
-        detail = "{}{}".format(ACTION_TEXT[action], ", автоматически" if by == "auto" else "")
+        detail = "{}{}{}".format(ACTION_TEXT[action], " без ответа организатору" if not notify else "",
+                                 ", автоматически" if by == "auto" else "")
         if proposed:
             detail += "; предложено {}".format(fmt_range(proposed["start"], proposed["end"])) if result.get("proposed") \
                 else "; Exchange не принял новое время, оно осталось только в тексте"
@@ -604,8 +608,15 @@ class Worker:
             raise ValueError("Письмо уже отправлено" if draft["status"] == "sent" else "Письмо отправляется")
         return draft
 
-    def add_upload(self, did: int, name: str, content_type: str, data: bytes) -> dict:
+    def add_upload(self, did: int, name: str, content_type: str, data: bytes, inline: bool = False,
+                   orig: str = "", size: str = "") -> dict:
+        """inline — картинка вставлена в текст письма (из буфера или перетаскиванием): уйдёт как встроенная.
+        orig и size — уменьшенная копия другой картинки письма («Мелкий», «Средний», «Крупный»): по orig
+        можно вернуть исходный размер."""
         draft = self._editable(did)
+        content_type = (content_type or "").split(";")[0].strip().lower()
+        if inline and content_type not in compose.INLINE_TYPES:
+            raise ValueError("В текст письма можно вставить картинку PNG, JPEG, GIF или WebP")
         name = os.path.basename(name.replace("\\", "/")).strip()[:200] or "файл"
         total = sum(a.get("size", 0) for a in draft["attachments"]) + len(data)
         if total > compose.MAX_UPLOAD:
@@ -616,8 +627,12 @@ class Worker:
         fd = os.open(os.path.join(folder, file_id), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        self.db.update_draft(did, {"attachments": draft["attachments"] + [
-            {"file": file_id, "name": name, "size": len(data), "content_type": content_type or "application/octet-stream"}]})
+        item = {"file": file_id, "name": name, "size": len(data), "content_type": content_type or "application/octet-stream"}
+        if inline:
+            item["cid"] = file_id  # в тексте письма картинка — <img src="cid:file_id">
+            if orig and any(a.get("cid") == orig for a in draft["attachments"]) and size in compose.IMAGE_SIZES:
+                item.update(orig=orig, scale=size)  # size уже занят: это байты
+        self.db.update_draft(did, {"attachments": draft["attachments"] + [item]})
         return self.db.get_draft(did)
 
     def remove_attachment(self, did: int, index: int) -> dict:
@@ -643,6 +658,14 @@ class Worker:
         with open(self._upload_path(did, items[index]["file"]), "rb") as f:
             return items[index], f.read()
 
+    def inline_data(self, did: int, cid: str) -> tuple:
+        """Картинка, вставленная в текст черновика, — для показа в редакторе."""
+        items = (self.db.get_draft(did) or {}).get("attachments") or []
+        for i, a in enumerate(items):
+            if a.get("cid") == cid:
+                return self.upload_data(did, i)
+        raise ValueError("Нет такой картинки")
+
     def _upload_path(self, did: int, file_id: str) -> str:
         if not file_id.isalnum():
             raise ValueError("Неверное вложение")
@@ -663,9 +686,12 @@ class Worker:
         email = self.db.get_email(draft["ref_email_id"]) if draft["ref_email_id"] else None
         if draft["kind"] != "new" and not (email and email.get("item_id")):
             raise ValueError("Исходное письмо получено старой версией сервиса: ответьте на него в Outlook")
-        files = [(a["name"], self.upload_data(did, i)[1])
-                 for i, a in enumerate(draft["attachments"]) if "file" in a]
-        cleaned = clean_fragment(draft["body_html"])
+        cids = [a["cid"] for a in draft["attachments"] if a.get("cid")]
+        cleaned = clean_fragment(draft["body_html"], cids)
+        # картинку, которую из текста удалили, не отправляем
+        files = [(a["name"], self.upload_data(did, i)[1], a.get("cid"))
+                 for i, a in enumerate(draft["attachments"])
+                 if "file" in a and (not a.get("cid") or 'src="cid:{}"'.format(a["cid"]) in cleaned)]
         body = '<div style="{}">{}</div>'.format(OUTGOING_STYLE, cleaned)
         self.db.update_draft(did, {"body_html": cleaned})  # в «Отправленных» то же, что ушло
         if not self.db.claim_draft(did):
