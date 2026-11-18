@@ -396,6 +396,28 @@ nav button.add { color: var(--accent); }
 .shSug button:hover, .shSug button.on { background: var(--soft); }
 .shSug small { display: block; color: var(--muted); font-size: 11.5px; }
 .evb .who, .cm-ev .who { font-weight: 600; }
+.shCal .shHead { display: flex; align-items: center; gap: 6px; }
+.shCal .shHead span { flex: 1; }
+.shCal .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; text-transform: none; letter-spacing: 0; }
+.shCal .seg button { border: 0; background: var(--panel); color: var(--muted); font: inherit; font-size: 11.5px; font-weight: 500; padding: 3px 8px; cursor: pointer; }
+.shCal .seg button + button { border-left: 1px solid var(--border); }
+.shCal .seg button.on { background: var(--accent); color: var(--accent-text); }
+.shRow .sw { width: 14px; height: 14px; border-radius: 4px; border: 0; padding: 0; cursor: pointer; flex-shrink: 0; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .15); }
+.shPal { position: fixed; z-index: 90; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+  padding: 10px; display: grid; grid-template-columns: repeat(6, 24px); gap: 8px; }
+.shPal button { width: 24px; height: 24px; border-radius: 6px; border: 0; padding: 0; cursor: pointer; position: relative; }
+.shPal button.on { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--text); }
+.shPal button.taken::after { content: ""; position: absolute; right: -3px; top: -3px; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--panel); box-shadow: inset 0 0 0 2px var(--muted); }
+.shPal .more { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.shPal .more input { width: 32px; height: 24px; padding: 0; border: 0; background: none; cursor: pointer; }
+#calGrid.side { flex-direction: row; overflow-x: auto; }
+.calPane { flex: 1 0 300px; min-width: 300px; display: flex; flex-direction: column; border-left: 1px solid var(--border); }
+.calPane:first-child { border-left: 0; }
+.calPane > .calGrid { flex: 1; min-height: 0; }
+.paneHead { display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 13px; font-weight: 600;
+  border-top: 3px solid var(--pane); background: color-mix(in srgb, var(--pane) 10%, var(--panel)); white-space: nowrap; overflow: hidden; }
+.paneHead small { color: var(--muted); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
 .legend { margin-top: 18px; font-size: 12.5px; color: var(--muted); display: grid; gap: 7px; }
 .legend div { display: flex; align-items: center; gap: 8px; }
 .legend i { width: 22px; height: 12px; border-radius: 3px; flex-shrink: 0; }
@@ -3253,7 +3275,32 @@ async function loadCal() {
 const SH_COLORS = ["#7e57c2", "#0288d1", "#ef6c00", "#00897b", "#c2185b", "#6d4c41", "#3949ab", "#7cb342"];
 const BUSY_TEXT = { Busy: "Занят", Tentative: "Под вопросом", OOF: "Нет на месте", WorkingElsewhere: "Работает в другом месте" };
 const SH_MODE = { full: "все встречи", details: "темы и места встреч", busy: "только занятость" };
-cal.shared = []; cal.sharedData = {}; cal.extra = []; cal.mine = stored("calMine") !== "0";
+cal.shared = []; cal.sharedData = {}; cal.extra = []; cal.mine = stored("calMine") !== "0"; cal.split = stored("calSplit") === "1";
+const PALETTE = ["#7e57c2", "#5c6bc0", "#0288d1", "#00acc1", "#00897b", "#43a047", "#7cb342", "#c0ca33",
+  "#f9a825", "#ef6c00", "#e53935", "#c2185b", "#8e24aa", "#6d4c41", "#546e7a", "#37474f", "#ad1457", "#00695c"];
+const ruleColors = () => (cal.colors || []).map((r) => (r.color || "").toLowerCase());
+function colorMenu(anchor, current, onPick) {
+  // палитра; цвета, которые уже у правил встреч (ПСИ, отдел…), помечены, чтобы не путать
+  document.querySelectorAll(".shPal").forEach((x) => x.remove());
+  const pal = el("div", "shPal"), taken = ruleColors(), close = () => { pal.remove(); document.removeEventListener("pointerdown", out, true); };
+  const out = (e) => { if (!pal.contains(e.target)) close(); };
+  PALETTE.forEach((c) => {
+    const b = el("button", (c === current ? "on " : "") + (taken.includes(c) ? "taken" : "")); b.type = "button"; b.style.background = c;
+    const rule = (cal.colors || []).find((r) => (r.color || "").toLowerCase() === c);
+    b.title = rule ? "Этот цвет у встреч «" + rule.name + "»" : c;
+    b.onclick = () => { close(); onPick(c); };
+    pal.appendChild(b);
+  });
+  const more = el("label", "more"), inp = el("input"); inp.type = "color"; inp.value = current || "#7e57c2";
+  inp.onchange = () => { close(); onPick(inp.value.toLowerCase()); };
+  more.append(inp, document.createTextNode("Другой цвет"));
+  pal.appendChild(more);
+  document.body.appendChild(pal);
+  const r = anchor.getBoundingClientRect();
+  pal.style.left = Math.min(r.left, innerWidth - pal.offsetWidth - 8) + "px";
+  pal.style.top = Math.min(r.bottom + 6, innerHeight - pal.offsetHeight - 8) + "px";
+  setTimeout(() => document.addEventListener("pointerdown", out, true));
+}
 const shName = (s) => s.name || s.email;
 const shTitle = (e) => e.private ? "Личная встреча" : e.subject || BUSY_TEXT[e.free_busy] || "Занят";
 async function loadShared(start, days) {
@@ -3278,14 +3325,28 @@ async function saveShared() {
 function renderShared() {
   const box = $("shCal"); if (!box) return;
   box.textContent = "";
-  box.appendChild(el("div", "shHead", "Календари"));
-  const row = (color, title, sub, checked, onToggle, onRemove, bad) => {
+  const head = el("div", "shHead"); head.appendChild(el("span", "", "Календари"));
+  if (cal.shared.some((s) => s.on)) {  // наложением в одной сетке или рядом, у каждого своя
+    const seg = el("div", "seg");
+    [[false, "Вместе", "Все календари в одной сетке"], [true, "Рядом", "Каждый календарь в своей сетке, бок о бок"]].forEach(([v, t, tip]) => {
+      const b = el("button", cal.split === v ? "on" : "", t); b.type = "button"; b.title = tip;
+      b.onclick = () => { cal.split = v; stored("calSplit", v ? "1" : null); closeEvPanel(); renderShared(); renderCal(); };
+      seg.appendChild(b);
+    });
+    head.appendChild(seg);
+  }
+  box.appendChild(head);
+  const row = (color, title, sub, checked, onToggle, onRemove, bad, onColor) => {
     const r = el("div", "shRow"), lab = el("label"), cb = el("input"), nm = el("div", "nm");
     cb.type = "checkbox"; cb.checked = checked; cb.style.accentColor = color; cb.onchange = () => onToggle(cb.checked);
     nm.appendChild(el("div", "", title));
     if (sub) nm.appendChild(el("small", bad ? "bad" : "", sub));
     nm.title = title + (sub ? "\n" + sub : "");
     lab.append(cb, nm); r.appendChild(lab);
+    if (onColor) {
+      const sw = el("button", "sw"); sw.type = "button"; sw.style.background = color; sw.title = "Цвет календаря";
+      sw.onclick = () => colorMenu(sw, color, onColor); r.appendChild(sw);
+    }
     if (onRemove) { const x = el("button", "x", "×"); x.type = "button"; x.title = "Убрать календарь из списка"; x.onclick = onRemove; r.appendChild(x); }
     box.appendChild(r);
   };
@@ -3295,7 +3356,11 @@ function renderShared() {
     const d = cal.sharedData[s.email];
     const sub = !s.on ? "" : !d ? "загружаю…" : d.error ? "нет доступа: " + d.error : SH_MODE[d.mode] || "";
     row(s.color, shName(s), sub, s.on, async (v) => { s.on = v; await saveShared(); const [a, n] = calRange(); renderShared(); loadShared(a, n); },
-      async () => { cal.shared = cal.shared.filter((x) => x !== s); await saveShared(); const [a, n] = calRange(); loadShared(a, n); }, d && d.error);
+      async () => { cal.shared = cal.shared.filter((x) => x !== s); await saveShared(); const [a, n] = calRange(); loadShared(a, n); }, d && d.error,
+      async (c) => {
+        s.color = c; cal.extra.forEach((e) => { if (e.owner === s.email) e.color = c; });
+        renderShared(); renderCal(); await saveShared();
+      });
   });
   // добавить: адресная книга и переписка, как при выборе адресатов письма
   const add = el("div", "shAdd"), btn = el("button", "linkBtn", "+ Открыть календарь коллеги");
@@ -3310,8 +3375,8 @@ function renderShared() {
       if (!ADDR_RE.test(email)) return;
       if (cal.shared.some((s) => s.email === email)) { renderShared(); return; }
       if (cal.shared.length >= 20) { alert("Можно открыть не больше 20 календарей"); return; }
-      const used = cal.shared.map((s) => s.color);
-      cal.shared.push({ email, name: p.name || "", color: SH_COLORS.find((c) => !used.includes(c)) || SH_COLORS[cal.shared.length % SH_COLORS.length], on: true });
+      const used = cal.shared.map((s) => s.color).concat(ruleColors());  // не совпадать с цветами правил встреч
+      cal.shared.push({ email, name: p.name || "", color: SH_COLORS.concat(PALETTE).find((c) => !used.includes(c)) || SH_COLORS[cal.shared.length % SH_COLORS.length], on: true });
       await saveShared();
       const [a, n] = calRange(); renderShared(); loadShared(a, n);
     };
@@ -3357,18 +3422,56 @@ function showSharedEvent(e) {
     : e.mode === "details" ? "Видны тема и место. Полный доступ владелец может дать в Outlook: «Разрешения календаря»."
     : "Встреча из календаря коллеги, только для просмотра."));
 }
+// календари рядом, как в Outlook: своя сетка у каждого календаря, прокрутка общая
+function calPanes() {
+  if (!cal.split) return null;
+  const list = [];
+  if (cal.mine) list.push({ key: "me", name: "Мой календарь", color: getComputedStyle(document.body).getPropertyValue("--accent").trim() });
+  cal.shared.filter((s) => s.on).forEach((s) => {
+    const d = cal.sharedData[s.email];
+    list.push({ key: s.email, name: shName(s), color: s.color, sub: d && !d.error ? SH_MODE[d.mode] : d && d.error ? "нет доступа" : "" });
+  });
+  return list.length > 1 ? list : null;
+}
 function renderCal() {
-  const [start, days] = calRange();
-  if (cal.view === "month") renderMonth(start); else renderWeek(start, days);
+  const [start, days] = calRange(), root = $("calGrid"), panes = calPanes();
+  if (!panes) {
+    if (root.classList.contains("side")) { root.classList.remove("side"); root.textContent = ""; }
+    cal.pane = null;
+    if (cal.view === "month") renderMonth(start, root); else renderWeek(start, days, root);
+    return;
+  }
+  const old = root.querySelector(".cg-scroll"), keep = old && root.classList.contains("side") ? old.scrollTop : null;
+  root.textContent = ""; root.classList.add("side");
+  panes.forEach((p) => {
+    const pane = el("div", "calPane"), head = el("div", "paneHead"), g = el("div", "calGrid");
+    pane.style.setProperty("--pane", p.color); pane.dataset.owner = p.key;
+    head.append(document.createTextNode(p.name)); if (p.sub) head.appendChild(el("small", "", p.sub));
+    pane.append(head, g); root.appendChild(pane);
+    cal.pane = p.key;
+    if (cal.view === "month") renderMonth(start, g); else renderWeek(start, days, g, keep);
+  });
+  cal.pane = null;
+  const scrolls = [...root.querySelectorAll(".cg-scroll")];
+  let syncing = false;
+  scrolls.forEach((s) => { s.onscroll = () => {
+    if (syncing) return; syncing = true;
+    scrolls.forEach((o) => { if (o !== s) o.scrollTop = s.scrollTop; });
+    requestAnimationFrame(() => { syncing = false; });
+  }; });
 }
 function eventsOn(day) {
   const next = addDays(day, 1);
-  return (cal.mine ? cal.events : []).concat(cal.extra).filter((e) => new Date(e.start) < next && new Date(e.end) > day);
+  const src = cal.pane === "me" ? cal.events : cal.pane ? cal.extra.filter((e) => e.owner === cal.pane)
+    : (cal.mine ? cal.events : []).concat(cal.extra);
+  return src.filter((e) => new Date(e.start) < next && new Date(e.end) > day);
 }
 const isAllDay = (e) => e.all_day || new Date(e.end) - new Date(e.start) >= 864e5;
 
-function renderWeek(start, n) {
-  const grid = $("calGrid"), prevScroll = grid.querySelector(".cg-scroll") ? grid.querySelector(".cg-scroll").scrollTop : null;
+function renderWeek(start, n, target, keep) {
+  const grid = target || $("calGrid"), old = grid.querySelector(".cg-scroll");
+  const prevScroll = keep !== undefined ? keep : old ? old.scrollTop : null;
+  const pane = cal.pane, other = pane && pane !== "me" ? cal.shared.find((s) => s.email === pane) : null;
   grid.textContent = "";
   grid.style.setProperty("--days", n);
   const days = [...Array(n)].map((_, i) => addDays(start, i)), now = new Date();
@@ -3387,7 +3490,7 @@ function renderWeek(start, n) {
   days.forEach((d) => {
     const c = el("div");
     eventsOn(d).filter(isAllDay).forEach((e) => {
-      const p = paintEv(el("div", "adv " + evClass(e), e.shared ? e.ownerName + ": " + shTitle(e) : e.subject || "(без темы)"), e);
+      const p = paintEv(el("div", "adv " + evClass(e), e.shared ? (pane ? "" : e.ownerName + ": ") + shTitle(e) : e.subject || "(без темы)"), e);
       p.onclick = () => (e.shared ? showSharedEvent : showEvent)(e);
       dayDrag(p, e);
       c.appendChild(p);
@@ -3416,7 +3519,7 @@ function renderWeek(start, n) {
       if (e.recurring) title.prepend(svgIcon("repeat", "rp"));
       b.appendChild(title);
       const t = el("span", "t", hm(new Date(e.start)) + "–" + hm(new Date(e.end)) + (e.location ? " · " + e.location : ""));
-      if (e.shared) t.prepend(el("span", "who", e.ownerName + " · "));
+      if (e.shared && !pane) t.prepend(el("span", "who", e.ownerName + " · "));
       b.appendChild(t);
       const movable = canEdit(e) && !e.cancelled;
       b.title = (e.subject || "") + "\n" + fmtRange(e.start, e.end) + (e.location ? "\n" + e.location : "") + (movable ? "\nПеретащите, чтобы перенести; потяните за нижний край — изменить длительность" : "");
@@ -3430,7 +3533,7 @@ function renderWeek(start, n) {
       line.style.top = "calc(var(--hour) * " + (now.getHours() * 60 + now.getMinutes()) / 60 + ")";
       col.appendChild(line);
     }
-    dragCreate(col, d);
+    dragCreate(col, d, other);
     body.appendChild(col);
   });
   scroll.appendChild(body);
@@ -3457,7 +3560,7 @@ function layoutDay(evs, day) {
   flush();
   return items;
 }
-function dragCreate(col, day) {
+function dragCreate(col, day, invite) {  // invite — в сетке коллеги: он сразу в участниках
   // протянуть мышью по пустому месту — выделить время новой встречи
   col.onpointerdown = (ev) => {
     if (ev.button !== 0) return;
@@ -3479,12 +3582,12 @@ function dragCreate(col, day) {
       const s = Math.min(a, b), f = Math.max(a, b) + 30;
       const start = new Date(day); start.setMinutes(s);
       const end = new Date(day); end.setMinutes(f);
-      openCreate(start, end, sel);
+      openCreate(start, end, sel, invite);
     };
   };
 }
-function renderMonth(start) {
-  const grid = $("calGrid"); grid.textContent = "";
+function renderMonth(start, target) {
+  const grid = target || $("calGrid"); grid.textContent = "";
   const box = el("div", "cm"), head = el("div", "cm-head"), cells = el("div", "cm-grid"), now = new Date(), month = cal.date.getMonth();
   ["пн", "вт", "ср", "чт", "пт", "сб", "вс"].forEach((d) => head.appendChild(el("div", "", d)));
   for (let i = 0; i < 42; i++) {
@@ -3492,7 +3595,7 @@ function renderMonth(start) {
     cell.appendChild(el("span", "cm-num", d.getDate() === 1 ? d.getDate() + " " + MONTHS_OF[d.getMonth()].slice(0, 3) : d.getDate()));
     const evs = eventsOn(d).sort((x, y) => isAllDay(y) - isAllDay(x) || new Date(x.start) - new Date(y.start));
     evs.slice(0, 3).forEach((e) => {
-      const p = paintEv(el("div", "cm-ev " + evClass(e), (isAllDay(e) ? "" : hm(new Date(e.start)) + " ") + (e.shared ? e.ownerName.split(" ")[0] + ": " + shTitle(e) : e.subject || "(без темы)")), e);
+      const p = paintEv(el("div", "cm-ev " + evClass(e), (isAllDay(e) ? "" : hm(new Date(e.start)) + " ") + (e.shared ? (cal.pane ? "" : e.ownerName.split(" ")[0] + ": ") + shTitle(e) : e.subject || "(без темы)")), e);
       if (e.recurring) p.prepend(svgIcon("repeat", "rp"));
       p.onclick = (ev) => { ev.stopPropagation(); (e.shared ? showSharedEvent : showEvent)(e); };
       dayDrag(p, e);
@@ -3653,7 +3756,7 @@ function dragEvent(ev, b, e) {
   // перетащить — перенести, потянуть за нижний край — изменить длительность; шаг 15 минут
   const resize = ev.target.classList.contains("rz");
   const s0 = new Date(e.start), f0 = new Date(e.end), y0 = ev.clientY, x0 = ev.clientX;
-  const cols = [...$("calGrid").querySelectorAll(".cg-col")], d0 = cols.indexOf(b.parentElement);
+  const cols = [...b.closest(".calGrid").querySelectorAll(".cg-col")], d0 = cols.indexOf(b.parentElement);
   const hourPx = b.parentElement.getBoundingClientRect().height / 24;
   let moved = false, s1 = s0, f1 = f0, ghost = null;
   b.setPointerCapture(ev.pointerId);
@@ -3874,15 +3977,15 @@ function discussionBlock(items) {
 }
 
 // форма встречи: новая или правка своей
-function openCreate(start, end, sel) {
+function openCreate(start, end, sel, invite) {
   // выделение мышью остаётся видно, пока открыта форма; прежнее выделение и выбранная встреча сбрасываются
   $("calGrid").querySelectorAll(".cg-sel").forEach((y) => { if (y !== sel) y.remove(); });
   if (cal.selId) { cal.selId = null; $("calGrid").querySelectorAll(".evb.on").forEach((y) => y.classList.remove("on")); }
-  openEditor(null, start, end);
+  openEditor(null, start, end, invite ? [{ email: invite.email, name: invite.name || invite.email }] : []);
 }
-function openEditor(x, start, end) {
+function openEditor(x, start, end, invite) {
   const isNew = !x;
-  x = x || { start: start.toISOString(), end: end.toISOString(), reminder: 15, free_busy: "Busy", required: [], optional: [], rooms: [] };
+  x = x || { start: start.toISOString(), end: end.toISOString(), reminder: 15, free_busy: "Busy", required: invite || [], optional: [], rooms: [] };
   const body = panel(isNew ? "Новая встреча" : "Изменить встречу", "", true);
   body.classList.add("evForm");
   const form = { rooms: (x.rooms || []).map((r) => ({ email: r.email, name: r.name || r.email })) };
